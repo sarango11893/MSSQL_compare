@@ -1,4 +1,5 @@
 using SqlSuite.Web.Components;
+using SqlSuite.Web.Services;
 using SqlSuite.Web.ViewModels;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -9,6 +10,7 @@ builder.Services.AddRazorComponents()
 // One state instance per SignalR circuit: the connection settings, results and script of
 // one browser tab never leak into another.
 builder.Services.AddScoped<ComparisonState>();
+builder.Services.AddSingleton<AdminAccessService>();
 
 var app = builder.Build();
 

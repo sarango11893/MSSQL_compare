@@ -64,6 +64,24 @@ Los grupos DML por tabla también comienzan colapsados. Pulsa la clave de un reg
 la comparación textual de sus valores anteriores (destino) y nuevos (origen), resaltando los
 valores eliminados y añadidos.
 
+### Modo administrador
+
+La aplicación inicia siempre en modo normal. Para habilitar «Aplicar en destino» y la opción de
+eliminar objetos ausentes, configura `SQLSUITE_ADMIN_PASSWORD` en el entorno del proceso servidor
+y reinicia la aplicación. Por ejemplo, en macOS/Linux define la variable en la misma terminal
+desde la que iniciarás el servidor:
+
+```bash
+export SQLSUITE_ADMIN_PASSWORD="elige-una-clave-segura"
+dotnet run --project src/SqlSuite.Web
+```
+
+El usuario puede activar el modo administrador desde la barra superior, introduciendo esa clave;
+la validación y el límite global de cinco intentos por minuto se aplican en el servidor. Al salir
+del modo se desactivan las eliminaciones y se limpian los resultados. Si la variable no está
+configurada, esas operaciones permanecen bloqueadas. Este modo protege las acciones de la interfaz,
+pero **no sustituye la autenticación de usuarios**: no expongas la aplicación a una red no confiable.
+
 > **La selección no usa `SchemaComparisonResult.Exclude`.** Ese API resulta poco fiable en DacFx
 > 162.x: devuelve `false` y deja `Included == true` cuando el nodo tiene dependencias de
 > exclusión, `GetExcludeDependencies` lanza `NotSupportedException`/`ArgumentException` al
@@ -80,6 +98,10 @@ por lado y hace un *merge join* ordenado por clave: nunca carga una tabla comple
 Cada fila se clasifica como `Insert`, `Update` o `Delete`, y `DataScriptGenerator` produce un
 script envuelto en transacción (borrados → actualizaciones → inserciones) usando
 `SqlLiteralFormatter` para los literales T-SQL.
+La clave de fila se obtiene de la PK (o de la alternativa única) y debe coincidir en origen y
+destino. Un cambio en una columna normal, incluida una FK, se detecta como `Update`; cambiar el
+valor de la PK cambia la identidad de la fila y se representa como `Delete` + `Insert`.
+Las FK no se usan para identificar filas ni para ordenar las operaciones entre tablas.
 
 Se omiten (y se reportan) las tablas sin clave, las que no existen en destino y las excluidas
 por configuración. `IsEqual` solo es `true` cuando **todas** las tablas se pudieron comparar
@@ -262,8 +284,8 @@ de SQL Server.
 ## Limitaciones conocidas
 
 - El script DML ordena por tabla (borrados → actualizaciones → inserciones) pero **no conoce las
-  claves foráneas**, así que en esquemas con FK puede requerir orden manual o deshabilitar
-  temporalmente las restricciones.
+  claves foráneas** ni calcula dependencias entre tablas, así que en esquemas con FK puede requerir
+  orden manual o deshabilitar temporalmente las restricciones.
 - No se comparan objetos de seguridad, permisos ni usuarios.
 - La interfaz web **no tiene autenticación**: escucha en `localhost` y cualquiera que pueda
   abrirla puede conectarse con las credenciales que escriba. No la expongas en una red no

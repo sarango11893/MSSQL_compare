@@ -9,7 +9,10 @@
             }
             <button class="btn" disabled="@(!HasScript)" @onclick="CopyAsync">Copiar</button>
             <button class="btn" disabled="@(!HasScript)" @onclick="DownloadAsync">Descargar .sql</button>
-            <button class="btn warn" disabled="@(!CanApply)" @onclick="ApplyAsync">Aplicar en destino</button>
+            @if (IsAdmin)
+            {
+                <button class="btn warn" disabled="@(!CanApply)" @onclick="ApplyAsync">Aplicar en destino</button>
+            }
         </div>
     </div>
 
@@ -39,6 +42,9 @@
 
     [Parameter]
     public string EmptyMessage { get; set; } = "Ejecuta una comparación para generar el script.";
+
+    [Parameter]
+    public bool IsAdmin { get; set; }
 
     [Parameter]
     public bool CanApply { get; set; }

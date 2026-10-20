@@ -35,6 +35,7 @@ internal static class DacModelReader
 
             var schemaName = parts[^2];
             var tableName = parts[^1];
+            var fullName = $"{schemaName}.{tableName}";
 
             if (NonComparableSchemas.Contains(schemaName))
                 continue;
@@ -46,17 +47,17 @@ internal static class DacModelReader
             string keySource = "Origen desconocido";
             IReadOnlyList<string> keyColumns = Array.Empty<string>();
 
-            if (primaryKeys.TryGetValue(tableName, out var pk) && IsUsableKey(pk, columns))
+            if (primaryKeys.TryGetValue(fullName, out var pk) && IsUsableKey(pk, columns))
             {
                 keyColumns = pk;
                 keySource = "Primary key";
             }
-            else if (uniqueConstraints.TryGetValue(tableName, out var constraint) && IsUsableKey(constraint, columns))
+            else if (uniqueConstraints.TryGetValue(fullName, out var constraint) && IsUsableKey(constraint, columns))
             {
                 keyColumns = constraint;
                 keySource = "Unique constraint";
             }
-            else if (uniqueIndexes.TryGetValue(tableName, out var index) && IsUsableKey(index, columns))
+            else if (uniqueIndexes.TryGetValue(fullName, out var index) && IsUsableKey(index, columns))
             {
                 keyColumns = index;
                 keySource = "Unique index";
@@ -135,7 +136,10 @@ internal static class DacModelReader
             if (host is null)
                 continue;
 
-            var hostName = host.Name.Parts.Last();
+            var hostName = GetQualifiedName(host);
+            if (hostName is null)
+                continue;
+
             var columns = constraint.GetReferenced(columnRelationship)
                 .Select(c => c.Name.Parts.Last())
                 .ToList();
@@ -165,7 +169,10 @@ internal static class DacModelReader
             if (host is null || host.ObjectType != ModelSchema.Table)
                 continue;
 
-            var hostName = host.Name.Parts.Last();
+            var hostName = GetQualifiedName(host);
+            if (hostName is null)
+                continue;
+
             var columns = index.GetReferenced(Index.Columns)
                 .Select(c => c.Name.Parts.Last())
                 .ToList();
@@ -175,6 +182,12 @@ internal static class DacModelReader
         }
 
         return map;
+    }
+
+    private static string? GetQualifiedName(TSqlObject table)
+    {
+        var parts = table.Name.Parts.ToList();
+        return parts.Count < 2 ? null : $"{parts[^2]}.{parts[^1]}";
     }
 
     private static T Get<T>(TSqlObject modelObject, ModelPropertyClass property)

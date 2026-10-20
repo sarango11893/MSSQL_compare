@@ -97,6 +97,12 @@ public sealed class DataComparerService
                 continue;
             }
 
+            if (!sourceTable.KeyColumns.SequenceEqual(targetTable.KeyColumns, StringComparer.OrdinalIgnoreCase))
+            {
+                skipped.Add($"{fullName} (clave de fila distinta entre origen y destino)");
+                continue;
+            }
+
             if (!sourceTable.HasKey)
             {
                 skipped.Add($"{fullName} (sin clave primaria ni índice único utilizable)");

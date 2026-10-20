@@ -27,6 +27,12 @@
         </div>
 
         <div class="titlebar-actions">
+            <span class="admin-mode-badge @(State.IsAdminMode ? "active" : null)">
+                @(State.IsAdminMode ? "ADMINISTRADOR" : "USUARIO")
+            </span>
+            <button class="icon-btn" disabled="@(State.IsBusy || State.IsRegeneratingScript)" @onclick="ToggleAdminMode">
+                @(State.IsAdminMode ? "Salir admin" : "Activar administrador")
+            </button>
             <button class="icon-btn" title="Refrescar el estado de los contenedores"
                     disabled="@State.IsBusy" @onclick="RefreshHealthAsync">⟳</button>
             <button class="icon-btn" title="Limpiar resultados y log"
@@ -90,8 +96,9 @@
                 <div class="option-list">
                     <label class="check-row">
                         <input type="checkbox" checked="@State.DropObjectsNotInSource"
+                               disabled="@(!State.IsAdminMode)"
                                @onchange="e => State.DropObjectsNotInSource = (bool)(e.Value ?? false)" />
-                        <span>Eliminar objetos ausentes en el origen</span>
+                        <span>Eliminar objetos ausentes en el origen@(State.IsAdminMode ? string.Empty : " (solo administrador)")</span>
                     </label>
                     <label class="check-row">
                         <input type="checkbox" checked="@State.BlockOnPossibleDataLoss"
@@ -380,6 +387,7 @@
                 <ScriptPanel Script="@State.DisplayedScript"
                              Title="@State.ScriptTitle"
                              EmptyMessage="@ScriptEmptyMessage"
+                             IsAdmin="State.IsAdminMode"
                              CanApply="State.CanApplyScript"
                              OnApply="ApplyScriptAsync">
                     <Actions>
@@ -532,7 +540,33 @@
     </div>
 }
 
+@if (State.IsAdminLoginVisible)
+{
+    <div class="modal-backdrop" @onclick="State.CancelAdminLogin">
+        <form class="modal" @onsubmit="ActivateAdminModeAsync" @onsubmit:preventDefault
+              @onclick:stopPropagation="true">
+            <h2>Activar modo administrador</h2>
+            <p>Introduce la clave de administrador configurada en el servidor para habilitar la eliminación de objetos y la aplicación en destino.</p>
+            @if (!string.IsNullOrEmpty(State.AdminLoginMessage))
+            {
+                <p class="admin-login-message">@State.AdminLoginMessage</p>
+            }
+            <label class="field">
+                <span>Clave de administrador</span>
+                <input type="password" autocomplete="current-password"
+                       @bind="_adminPassword" @bind:event="oninput" />
+            </label>
+            <div class="modal-actions">
+                <button class="btn" type="button" @onclick="CancelAdminLogin">Cancelar</button>
+                <button class="btn primary" type="submit">Activar</button>
+            </div>
+        </form>
+    </div>
+}
+
 @code {
+    private string _adminPassword = string.Empty;
+
     protected override void OnInitialized() => State.Changed += OnStateChanged;
 
     public void Dispose() => State.Changed -= OnStateChanged;
@@ -604,6 +638,29 @@
     }
 
     private async Task ConfirmApplyAsync() => await State.ConfirmApplyScriptAsync();
+
+    private void ToggleAdminMode()
+    {
+        if (State.IsAdminMode)
+        {
+            State.DeactivateAdminMode();
+            return;
+        }
+
+        State.ShowAdminLogin();
+    }
+
+    private void CancelAdminLogin()
+    {
+        _adminPassword = string.Empty;
+        State.CancelAdminLogin();
+    }
+
+    private void ActivateAdminModeAsync()
+    {
+        State.ActivateAdminMode(_adminPassword);
+        _adminPassword = string.Empty;
+    }
 
     private void OnMaxRowsChanged(ChangeEventArgs args)
     {

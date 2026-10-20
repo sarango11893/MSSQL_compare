@@ -1,6 +1,7 @@
 using SqlSuite.Core.Enums;
 using SqlSuite.Core.Models;
 using SqlSuite.Core.Services;
+using SqlSuite.Web.Services;
 
 namespace SqlSuite.Web.ViewModels;
 
@@ -16,6 +17,7 @@ public sealed class ComparisonState
     private readonly TextDiffService _textDiffService = new();
     private readonly ScriptExecutionService _executionService = new();
     private readonly ComparisonOptions _options = new();
+    private readonly AdminAccessService _adminAccessService;
 
     private ComparisonMode _mode = ComparisonMode.Schema;
     private string _statusMessage = "Listo.";
@@ -42,10 +44,14 @@ public sealed class ComparisonState
     private bool _isApplyConfirmationVisible;
     private bool _isRegeneratingScript;
     private bool _isConnectionDrawerVisible;
+    private bool _isAdminLoginVisible;
+    private bool _isAdminMode;
+    private string _adminLoginMessage = string.Empty;
     private CancellationTokenSource? _cts;
 
-    public ComparisonState()
+    public ComparisonState(AdminAccessService adminAccessService)
     {
+        _adminAccessService = adminAccessService;
         Source = new ConnectionState("Origen (source)");
         Target = new ConnectionState("Destino (target)");
     }
@@ -182,6 +188,13 @@ public sealed class ComparisonState
                 break;
 
             case "Sincronización completa":
+                if (!IsAdminMode)
+                {
+                    StatusMessage = "El preset de sincronización completa requiere activar el modo administrador.";
+                    AddLog("Aviso", StatusMessage);
+                    return;
+                }
+
                 DropObjectsNotInSource = true;
                 MaxRowsPerTable = 100_000;
                 break;
@@ -312,7 +325,72 @@ public sealed class ComparisonState
 
     public bool CanCompare => !IsBusy;
 
-    public bool CanApplyScript => !IsBusy && !IsRegeneratingScript && HasScript;
+    public bool CanApplyScript => IsAdminMode && !IsBusy && !IsRegeneratingScript && HasScript;
+
+    public bool IsAdminMode => _isAdminMode;
+
+    public bool IsAdminLoginVisible => _isAdminLoginVisible;
+
+    public string AdminLoginMessage => _adminLoginMessage;
+
+    public void ShowAdminLogin()
+    {
+        _adminLoginMessage = _adminAccessService.IsConfigured
+            ? string.Empty
+            : "El administrador no está configurado. Define SQLSUITE_ADMIN_PASSWORD en el entorno del servidor y reinicia la aplicación.";
+        _isAdminLoginVisible = true;
+        Notify();
+    }
+
+    public void CancelAdminLogin()
+    {
+        _isAdminLoginVisible = false;
+        _adminLoginMessage = string.Empty;
+        Notify();
+    }
+
+    public bool ActivateAdminMode(string? password)
+    {
+        if (!_adminAccessService.TryValidatePassword(password, out TimeSpan lockoutRemaining))
+        {
+            if (lockoutRemaining > TimeSpan.Zero)
+            {
+                _adminLoginMessage = $"Demasiados intentos. Vuelve a intentarlo en {(int)Math.Ceiling(lockoutRemaining.TotalSeconds)} segundos.";
+            }
+            else if (!_adminAccessService.IsConfigured)
+            {
+                _adminLoginMessage = "El administrador no está configurado. Define SQLSUITE_ADMIN_PASSWORD en el entorno del servidor y reinicia la aplicación.";
+            }
+            else
+            {
+                _adminLoginMessage = "La clave de administrador no es válida.";
+            }
+
+            Notify();
+            return false;
+        }
+
+        _isAdminMode = true;
+        _isAdminLoginVisible = false;
+        _adminLoginMessage = string.Empty;
+        StatusMessage = "Modo administrador activado para esta sesión.";
+        AddLog("Security", "Se activó el modo administrador en esta sesión.");
+        Notify();
+        return true;
+    }
+
+    public void DeactivateAdminMode()
+    {
+        if (!_isAdminMode)
+            return;
+
+        _isAdminMode = false;
+        _options.DropObjectsNotInSource = false;
+        ClearResults();
+        StatusMessage = "Modo normal activado. Ejecuta una nueva comparación antes de generar o aplicar otro script.";
+        AddLog("Security", "Se desactivó el modo administrador y se limpiaron los resultados.");
+        Notify();
+    }
 
     /// <summary>Drives the in-app replacement for the WPF confirmation dialog.</summary>
     public bool IsApplyConfirmationVisible
@@ -878,6 +956,12 @@ public sealed class ComparisonState
         get => _options.DropObjectsNotInSource;
         set
         {
+            if (value && !IsAdminMode)
+            {
+                StatusMessage = "La eliminación de objetos ausentes solo está disponible en modo administrador.";
+                return;
+            }
+
             if (_options.DropObjectsNotInSource == value)
                 return;
 
@@ -990,6 +1074,12 @@ public sealed class ComparisonState
 
     public void RequestApplyScript()
     {
+        if (!IsAdminMode)
+        {
+            StatusMessage = "Activa el modo administrador para aplicar scripts en el destino.";
+            return;
+        }
+
         if (!CanApplyScript)
             return;
 
@@ -1009,6 +1099,12 @@ public sealed class ComparisonState
     public async Task ConfirmApplyScriptAsync()
     {
         IsApplyConfirmationVisible = false;
+
+        if (!IsAdminMode)
+        {
+            StatusMessage = "El modo administrador es necesario para aplicar scripts en el destino.";
+            return;
+        }
 
         var target = Target.ToConnectionInfo();
         if (!ValidateConnection(target, "destino"))

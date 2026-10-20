@@ -99,6 +99,23 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
     gap: 6px;
 }
 
+.admin-mode-badge {
+    padding: 4px 7px;
+    color: var(--text-mute);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .5px;
+}
+
+.admin-mode-badge.active {
+    color: #fcd34d;
+    border-color: rgba(245, 158, 11, .45);
+    background: rgba(245, 158, 11, .1);
+}
+
 .icon-btn {
     display: inline-flex;
     align-items: center;
@@ -1223,6 +1240,14 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
 }
 
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.admin-login-message {
+    padding: 8px 10px;
+    color: #fca5a5 !important;
+    background: rgba(239, 68, 68, .1);
+    border: 1px solid rgba(239, 68, 68, .25);
+    border-radius: var(--radius-sm);
+}
 
 /* --------------------------------------------------------- blazor error */
 
