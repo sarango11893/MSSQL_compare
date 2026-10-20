@@ -9,7 +9,9 @@ Se ejecuta en macOS, Linux y Windows; la interfaz se abre en el navegador.
 - **Microsoft.Data.SqlClient** para la comparación de datos en streaming
 
 El documento de requisitos y la estructura de referencia están en [docs/PRD.txt](docs/PRD.txt)
-y [docs/Estructura_Proyecto.txt](docs/Estructura_Proyecto.txt).
+y [docs/Estructura_Proyecto.txt](docs/Estructura_Proyecto.txt). Para retomar trabajo técnico con
+otro agente, consulta la [guía de continuidad](docs/AI_HANDOFF.md), que resume arquitectura,
+flujos actuales, decisiones y limitaciones conocidas.
 
 ---
 
