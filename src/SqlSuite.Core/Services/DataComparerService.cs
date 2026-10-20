@@ -29,11 +29,21 @@ public sealed class DataComparerService
         DatabaseConnectionInfo target,
         ComparisonOptions? options = null,
         CancellationToken cancellationToken = default)
+        => CompareAsync(source, target, options, cancellationToken).GetAwaiter().GetResult();
+
+    /// <summary>Compares all comparable rows and reports progress as each table is streamed.</summary>
+    public async Task<DataComparisonResultInfo> CompareAsync(
+        DatabaseConnectionInfo source,
+        DatabaseConnectionInfo target,
+        ComparisonOptions? options = null,
+        CancellationToken cancellationToken = default,
+        IProgress<DataComparisonProgress>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(target);
 
         var effective = (options ?? _defaultOptions).Clone();
+        effective.MaxRowsPerTable = Math.Max(1, effective.MaxRowsPerTable);
         var startedAt = DateTime.UtcNow;
         var errors = new List<string>();
 
@@ -42,34 +52,77 @@ public sealed class DataComparerService
 
         try
         {
-            sourceModel = LoadModel(source);
-            targetModel = LoadModel(target);
+            progress?.Report(new DataComparisonProgress("Extrayendo esquema de origen"));
+            sourceModel = await Task.Run(() => LoadModel(source, "origen"), cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            progress?.Report(new DataComparisonProgress("Extrayendo esquema de destino"));
+            targetModel = await Task.Run(() => LoadModel(target, "destino"), cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
             return new DataComparisonResultInfo
             {
                 IsValid = false,
-                Errors = new[] { $"No se pudo leer el esquema de origen o destino: {ex.Message}" },
+                Errors = new[] { $"No se pudo leer el esquema: {FormatExceptionDetails(ex)}" },
                 Duration = DateTime.UtcNow - startedAt,
             };
         }
 
-        var sourceTables = DacModelReader.ReadTables(sourceModel)
+        var allSourceTables = DacModelReader.ReadTables(sourceModel)
             .ToDictionary(t => t.FullName, StringComparer.OrdinalIgnoreCase);
         var targetTables = DacModelReader.ReadTables(targetModel)
             .ToDictionary(t => t.FullName, StringComparer.OrdinalIgnoreCase);
+        var configuredTables = effective.IncludedTables
+            .Select(name => name.Trim())
+            .Where(name => name.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var sourceTables = allSourceTables
+            .Where(pair => IsIncluded(pair.Value, configuredTables))
+            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        var foundConfiguredTables = sourceTables.Values
+            .SelectMany(table => configuredTables.Where(name => MatchesTableName(table, name)))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var tables = new List<TableDataDifference>();
         var skipped = new List<string>();
+        var additionalWarnings = new List<string>();
+        foreach (var missingName in configuredTables.Where(name => !foundConfiguredTables.Contains(name)))
+            skipped.Add($"{missingName} (no se encontró en el esquema de origen)");
+
+        if (configuredTables.Count > 0 && sourceTables.Count == 0)
+        {
+            return new DataComparisonResultInfo
+            {
+                IsValid = false,
+                Errors = new[] { "Ninguna de las tablas configuradas existe en el esquema de origen." },
+                SkippedTables = skipped,
+                Duration = DateTime.UtcNow - startedAt,
+            };
+        }
 
         using var sourceConnection = new SqlConnection(source.GetConnectionString());
         using var targetConnection = new SqlConnection(target.GetConnectionString());
+        var canCompareAcrossDatabases = SameServer(source.ServerName, target.ServerName)
+            && SameSecurityContext(source, target);
 
         try
         {
-            sourceConnection.Open();
-            targetConnection.Open();
+            progress?.Report(new DataComparisonProgress(canCompareAcrossDatabases
+                ? "Conectando para comparación en SQL Server"
+                : "Conectando a las bases de datos"));
+            await sourceConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await targetConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -81,9 +134,17 @@ public sealed class DataComparerService
             };
         }
 
-        foreach (var (fullName, sourceTable) in sourceTables.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+        var orderedTables = sourceTables.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).ToList();
+        for (var tableIndex = 0; tableIndex < orderedTables.Count; tableIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var (fullName, sourceTable) = orderedTables[tableIndex];
+
+            progress?.Report(new DataComparisonProgress(
+                "Revisando tablas",
+                fullName,
+                tableIndex + 1,
+                orderedTables.Count));
 
             if (IsExcluded(fullName, effective))
             {
@@ -116,17 +177,73 @@ public sealed class DataComparerService
                 continue;
             }
 
+            var displayColumns = sourceTable.Columns
+                .Where(column => targetTable.FindColumn(column.Name) is not null)
+                .ToList();
+
             try
             {
-                var difference = CompareTable(
-                    sourceConnection,
-                    targetConnection,
-                    sourceTable,
-                    comparableColumns,
-                    effective,
-                    cancellationToken);
+                TableDataDifference difference;
+                if (canCompareAcrossDatabases
+                    && targetTable.HasKey
+                    && CanCompareInSqlServer(sourceTable, targetTable, comparableColumns, effective))
+                {
+                    try
+                    {
+                        difference = await CompareTableInSqlServerAsync(
+                            sourceConnection,
+                            source.DatabaseName,
+                            target.DatabaseName,
+                            sourceTable,
+                            comparableColumns,
+                            displayColumns,
+                            effective,
+                            cancellationToken,
+                            tableIndex + 1,
+                            orderedTables.Count,
+                            progress).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        additionalWarnings.Add(
+                            $"{fullName}: comparación dentro de SQL Server no disponible ({ex.Message}); se usó lectura por conexiones separadas.");
+                        difference = await CompareTableAsync(
+                            sourceConnection,
+                            targetConnection,
+                            sourceTable,
+                            comparableColumns,
+                            displayColumns,
+                            effective,
+                            cancellationToken,
+                            tableIndex + 1,
+                            orderedTables.Count,
+                            progress).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    difference = await CompareTableAsync(
+                        sourceConnection,
+                        targetConnection,
+                        sourceTable,
+                        comparableColumns,
+                        displayColumns,
+                        effective,
+                        cancellationToken,
+                        tableIndex + 1,
+                        orderedTables.Count,
+                        progress).ConfigureAwait(false);
+                }
 
                 tables.Add(difference);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -135,9 +252,11 @@ public sealed class DataComparerService
         }
 
         var warnings = tables.SelectMany(t => t.Warnings).ToList();
+        warnings.AddRange(additionalWarnings);
         var allEmpty = tables.All(t => t.TotalCount == 0);
 
-        var script = effective.GenerateDeploymentScript && !allEmpty
+        var hasTruncatedTables = tables.Any(table => table.IsTruncated);
+        var script = effective.GenerateDeploymentScript && !allEmpty && !hasTruncatedTables
             ? new DataScriptGenerator(effective).Generate(tables)
             : string.Empty;
 
@@ -145,7 +264,7 @@ public sealed class DataComparerService
         {
             IsValid = errors.Count == 0,
             // A skipped table is not a proven match, so it must not be reported as equality.
-            IsEqual = allEmpty && errors.Count == 0 && skipped.Count == 0,
+            IsEqual = allEmpty && errors.Count == 0 && skipped.Count == 0 && !hasTruncatedTables,
             Script = script,
             Tables = tables,
             SkippedTables = skipped,
@@ -159,16 +278,49 @@ public sealed class DataComparerService
     public IReadOnlyList<TableSchemaInfo> DiscoverTables(DatabaseConnectionInfo connection)
     {
         ArgumentNullException.ThrowIfNull(connection);
-        return DacModelReader.ReadTables(LoadModel(connection)).ToList();
+        return DacModelReader.ReadTables(LoadModel(connection, "base de datos")).ToList();
     }
 
-    private static TSqlModel LoadModel(DatabaseConnectionInfo connection)
-        => TSqlModel.LoadFromDatabase(
-            connection.GetConnectionString(),
-            new ModelExtractOptions { LoadAsScriptBackedModel = false });
+    private static TSqlModel LoadModel(DatabaseConnectionInfo connection, string side)
+    {
+        try
+        {
+            return TSqlModel.LoadFromDatabase(
+                connection.GetConnectionString(),
+                new ModelExtractOptions { LoadAsScriptBackedModel = false });
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Falló la extracción del esquema de {side}.", ex);
+        }
+    }
+
+    private static string FormatExceptionDetails(Exception exception)
+    {
+        var details = new List<string>();
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+            details.Add($"{current.GetType().Name}: {current.Message}");
+
+        return string.Join(" -> ", details);
+    }
 
     private static bool IsExcluded(string fullName, ComparisonOptions options)
         => options.ExcludedTables.Any(e => e.Equals(fullName, StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsIncluded(TableSchemaInfo table, IReadOnlyList<string> includedTables)
+        => includedTables.Count == 0 || includedTables.Any(name => MatchesTableName(table, name));
+
+    private static bool MatchesTableName(TableSchemaInfo table, string configuredName)
+    {
+        var normalizedName = configuredName
+            .Replace("[", string.Empty, StringComparison.Ordinal)
+            .Replace("]", string.Empty, StringComparison.Ordinal)
+            .Trim();
+
+        return normalizedName.Contains('.')
+            ? table.FullName.Equals(normalizedName, StringComparison.OrdinalIgnoreCase)
+            : table.TableName.Equals(normalizedName, StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// Columns present on both sides that a script could write to. When
@@ -197,24 +349,37 @@ public sealed class DataComparerService
         return result;
     }
 
-    private static TableDataDifference CompareTable(
+    private static async Task<TableDataDifference> CompareTableAsync(
         SqlConnection sourceConnection,
         SqlConnection targetConnection,
         TableSchemaInfo sourceTable,
-        IReadOnlyList<ColumnSchemaInfo> columns,
+        IReadOnlyList<ColumnSchemaInfo> comparableColumns,
+        IReadOnlyList<ColumnSchemaInfo> displayColumns,
         ComparisonOptions options,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int tableIndex,
+        int tableCount,
+        IProgress<DataComparisonProgress>? progress)
     {
         var changes = new List<RowChange>();
         var truncated = false;
+        long sourceRowsRead = 0;
+        long targetRowsRead = 0;
+        long nextProgressAt = 5_000;
 
-        using var sourceReader = ExecuteQuery(sourceConnection, sourceTable, columns, options);
-        using var targetReader = ExecuteQuery(targetConnection, sourceTable, columns, options);
-        var sourceRow = new RowBuffer(sourceReader, columns);
-        var targetRow = new RowBuffer(targetReader, columns);
+        using var sourceCommand = CreateCommand(sourceConnection, sourceTable, displayColumns, options);
+        using var targetCommand = CreateCommand(targetConnection, sourceTable, displayColumns, options);
+        await using var sourceReader = await sourceCommand
+            .ExecuteReaderAsync(CommandBehavior.Default, cancellationToken)
+            .ConfigureAwait(false);
+        await using var targetReader = await targetCommand
+            .ExecuteReaderAsync(CommandBehavior.Default, cancellationToken)
+            .ConfigureAwait(false);
+        var sourceRow = new RowBuffer(sourceReader, displayColumns);
+        var targetRow = new RowBuffer(targetReader, displayColumns);
 
-        var hasSource = sourceRow.Read();
-        var hasTarget = targetRow.Read();
+        var hasSource = await ReadSourceRowAsync().ConfigureAwait(false);
+        var hasTarget = await ReadTargetRowAsync().ConfigureAwait(false);
 
         while (hasSource || hasTarget)
         {
@@ -222,40 +387,88 @@ public sealed class DataComparerService
 
             if (!hasSource)
             {
-                changes.Add(BuildChange(RowChangeKind.Delete, sourceTable, null, targetRow, columns, options));
-                hasTarget = targetRow.Read();
-                continue;
+                changes.Add(BuildChange(
+                    RowChangeKind.Delete,
+                    sourceTable,
+                    null,
+                    targetRow,
+                    comparableColumns,
+                    displayColumns,
+                    options));
+                hasTarget = await ReadTargetRowAsync().ConfigureAwait(false);
             }
-
-            if (!hasTarget)
+            else if (!hasTarget)
             {
-                changes.Add(BuildChange(RowChangeKind.Insert, sourceTable, sourceRow, null, columns, options));
-                hasSource = sourceRow.Read();
-                continue;
-            }
-
-            var comparison = CompareKeys(sourceRow, targetRow, sourceTable.KeyColumns, options);
-
-            if (comparison < 0)
-            {
-                changes.Add(BuildChange(RowChangeKind.Insert, sourceTable, sourceRow, null, columns, options));
-                hasSource = sourceRow.Read();
-            }
-            else if (comparison > 0)
-            {
-                changes.Add(BuildChange(RowChangeKind.Delete, sourceTable, null, targetRow, columns, options));
-                hasTarget = targetRow.Read();
+                changes.Add(BuildChange(
+                    RowChangeKind.Insert,
+                    sourceTable,
+                    sourceRow,
+                    null,
+                    comparableColumns,
+                    displayColumns,
+                    options));
+                hasSource = await ReadSourceRowAsync().ConfigureAwait(false);
             }
             else
             {
-                var changed = FindChangedColumns(sourceRow, targetRow, columns, options);
-                if (changed.Count > 0)
-                {
-                    changes.Add(BuildChange(RowChangeKind.Update, sourceTable, sourceRow, targetRow, columns, options, changed));
-                }
+                var comparison = CompareKeys(sourceRow, targetRow, sourceTable.KeyColumns, options);
 
-                hasSource = sourceRow.Read();
-                hasTarget = targetRow.Read();
+                if (comparison < 0)
+                {
+                    changes.Add(BuildChange(
+                        RowChangeKind.Insert,
+                        sourceTable,
+                        sourceRow,
+                        null,
+                        comparableColumns,
+                        displayColumns,
+                        options));
+                    hasSource = await ReadSourceRowAsync().ConfigureAwait(false);
+                }
+                else if (comparison > 0)
+                {
+                    changes.Add(BuildChange(
+                        RowChangeKind.Delete,
+                        sourceTable,
+                        null,
+                        targetRow,
+                        comparableColumns,
+                        displayColumns,
+                        options));
+                    hasTarget = await ReadTargetRowAsync().ConfigureAwait(false);
+                }
+                else
+                {
+                    var changed = FindChangedColumns(sourceRow, targetRow, comparableColumns, options);
+                    if (changed.Count > 0)
+                    {
+                        changes.Add(BuildChange(
+                            RowChangeKind.Update,
+                            sourceTable,
+                            sourceRow,
+                            targetRow,
+                            comparableColumns,
+                            displayColumns,
+                            options,
+                            changed));
+                    }
+
+                    hasSource = await ReadSourceRowAsync().ConfigureAwait(false);
+                    hasTarget = await ReadTargetRowAsync().ConfigureAwait(false);
+                }
+            }
+
+            var rowsRead = sourceRowsRead + targetRowsRead;
+            if (rowsRead >= nextProgressAt)
+            {
+                progress?.Report(new DataComparisonProgress(
+                    "Comparando filas",
+                    sourceTable.FullName,
+                    tableIndex,
+                    tableCount,
+                    sourceRowsRead,
+                    targetRowsRead));
+                nextProgressAt = rowsRead + 5_000;
             }
 
             if (changes.Count >= options.MaxRowsPerTable)
@@ -265,17 +478,412 @@ public sealed class DataComparerService
             }
         }
 
+        progress?.Report(new DataComparisonProgress(
+            "Tabla completada",
+            sourceTable.FullName,
+            tableIndex,
+            tableCount,
+            sourceRowsRead,
+            targetRowsRead));
+
         return new TableDataDifference
         {
             Table = sourceTable,
             Changes = changes,
+            IsTruncated = truncated,
+            Warnings = truncated
+                ? new[] { $"Se alcanzó el límite de {options.MaxRowsPerTable} filas; el resultado está truncado." }
+                : Array.Empty<string>(),
+        };
+
+        async Task<bool> ReadSourceRowAsync()
+        {
+            var hasRow = await sourceRow.ReadAsync(cancellationToken).ConfigureAwait(false);
+            if (hasRow)
+                sourceRowsRead++;
+            return hasRow;
+        }
+
+        async Task<bool> ReadTargetRowAsync()
+        {
+            var hasRow = await targetRow.ReadAsync(cancellationToken).ConfigureAwait(false);
+            if (hasRow)
+                targetRowsRead++;
+            return hasRow;
+        }
+    }
+
+    private static async Task<TableDataDifference> CompareTableInSqlServerAsync(
+        SqlConnection connection,
+        string sourceDatabase,
+        string targetDatabase,
+        TableSchemaInfo table,
+        IReadOnlyList<ColumnSchemaInfo> comparableColumns,
+        IReadOnlyList<ColumnSchemaInfo> displayColumns,
+        ComparisonOptions options,
+        CancellationToken cancellationToken,
+        int tableIndex,
+        int tableCount,
+        IProgress<DataComparisonProgress>? progress)
+    {
+        progress?.Report(new DataComparisonProgress(
+            "Comparando diferencias en SQL Server",
+            table.FullName,
+            tableIndex,
+            tableCount));
+
+        using var command = CreateServerSideCommand(
+            connection,
+            sourceDatabase,
+            targetDatabase,
+            table,
+            comparableColumns,
+            displayColumns,
+            options);
+        await using var reader = await command
+            .ExecuteReaderAsync(CommandBehavior.Default, cancellationToken)
+            .ConfigureAwait(false);
+
+        var selected = table.KeyColumns
+            .Concat(displayColumns.Select(column => column.Name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var sourceOrdinals = selected
+            .Select((column, index) => (Name: column, Ordinal: index * 2))
+            .ToDictionary(item => item.Name, item => item.Ordinal, StringComparer.OrdinalIgnoreCase);
+        var targetOrdinals = selected
+            .Select((column, index) => (Name: column, Ordinal: index * 2 + 1))
+            .ToDictionary(item => item.Name, item => item.Ordinal, StringComparer.OrdinalIgnoreCase);
+        var sourceKeyOrdinal = sourceOrdinals[table.KeyColumns[0]];
+        var targetKeyOrdinal = targetOrdinals[table.KeyColumns[0]];
+        var changes = new List<RowChange>();
+        var truncated = false;
+        long rowsRead = 0;
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            rowsRead++;
+
+            var sourceSelectedValues = ReadRowValues(reader, sourceOrdinals, selected);
+            var targetSelectedValues = ReadRowValues(reader, targetOrdinals, selected);
+            var sourceValues = SelectValues(sourceSelectedValues, displayColumns);
+            var targetValues = SelectValues(targetSelectedValues, displayColumns);
+            var sourceExists = !reader.IsDBNull(sourceKeyOrdinal);
+            var targetExists = !reader.IsDBNull(targetKeyOrdinal);
+            RowChange? change;
+
+            if (!sourceExists)
+            {
+                change = CreateServerSideChange(
+                    RowChangeKind.Delete,
+                    table,
+                    comparableColumns,
+                    displayColumns,
+                    null,
+                    targetValues,
+                    targetSelectedValues);
+            }
+            else if (!targetExists)
+            {
+                change = CreateServerSideChange(
+                    RowChangeKind.Insert,
+                    table,
+                    comparableColumns,
+                    displayColumns,
+                    sourceValues,
+                    null,
+                    sourceSelectedValues);
+            }
+            else
+            {
+                var changedColumns = comparableColumns
+                    .Select(column => new ColumnValueChange(
+                        column.Name,
+                        sourceValues[column.Name],
+                        targetValues[column.Name]))
+                    .Where(valueChange => CompareValues(
+                        valueChange.SourceValue,
+                        valueChange.TargetValue,
+                        options,
+                        normalizeLineEndings: options.NormalizeLineEndings) != 0)
+                    .ToList();
+
+                change = changedColumns.Count == 0
+                    ? null
+                    : CreateServerSideChange(
+                        RowChangeKind.Update,
+                        table,
+                        comparableColumns,
+                        displayColumns,
+                        sourceValues,
+                        targetValues,
+                        sourceSelectedValues,
+                        changedColumns);
+            }
+
+            if (change is not null)
+            {
+                if (changes.Count == options.MaxRowsPerTable)
+                {
+                    truncated = true;
+                    break;
+                }
+
+                changes.Add(change);
+            }
+
+            if (rowsRead % 1_000 == 0)
+            {
+                progress?.Report(new DataComparisonProgress(
+                    "Diferencias recibidas de SQL Server",
+                    table.FullName,
+                    tableIndex,
+                    tableCount,
+                    rowsRead,
+                    rowsRead));
+            }
+        }
+
+        progress?.Report(new DataComparisonProgress(
+            "Tabla completada",
+            table.FullName,
+            tableIndex,
+            tableCount,
+            rowsRead,
+            rowsRead));
+
+        return new TableDataDifference
+        {
+            Table = table,
+            Changes = changes,
+            IsTruncated = truncated,
             Warnings = truncated
                 ? new[] { $"Se alcanzó el límite de {options.MaxRowsPerTable} filas; el resultado está truncado." }
                 : Array.Empty<string>(),
         };
     }
 
-    private static SqlDataReader ExecuteQuery(
+    private static SqlCommand CreateServerSideCommand(
+        SqlConnection connection,
+        string sourceDatabase,
+        string targetDatabase,
+        TableSchemaInfo table,
+        IReadOnlyList<ColumnSchemaInfo> comparableColumns,
+        IReadOnlyList<ColumnSchemaInfo> displayColumns,
+        ComparisonOptions options)
+    {
+        var selected = table.KeyColumns
+            .Concat(displayColumns.Select(column => column.Name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var sourceTable = $"{SqlLiteralFormatter.QuoteIdentifier(sourceDatabase)}.{table.QualifiedName}";
+        var targetTable = $"{SqlLiteralFormatter.QuoteIdentifier(targetDatabase)}.{table.QualifiedName}";
+        var join = string.Join(" AND ", table.KeyColumns.Select(key =>
+        {
+            var column = table.FindColumn(key)!;
+            var sourceKey = $"s.{SqlLiteralFormatter.QuoteIdentifier(key)}";
+            var targetKey = $"t.{SqlLiteralFormatter.QuoteIdentifier(key)}";
+            return BuildSqlEquality(sourceKey, targetKey, column);
+        }));
+        var sourcePresence = $"s.{SqlLiteralFormatter.QuoteIdentifier(table.KeyColumns[0])} IS NULL";
+        var targetPresence = $"t.{SqlLiteralFormatter.QuoteIdentifier(table.KeyColumns[0])} IS NULL";
+        var differentColumns = string.Join(" OR ", comparableColumns.Select(column =>
+        {
+            var sourceValue = $"s.{SqlLiteralFormatter.QuoteIdentifier(column.Name)}";
+            var targetValue = $"t.{SqlLiteralFormatter.QuoteIdentifier(column.Name)}";
+            return BuildSqlDifference(sourceValue, targetValue, column);
+        }));
+
+        var query = new StringBuilder();
+        query.Append("SELECT ");
+        query.Append(string.Join(", ", selected.SelectMany((name, index) =>
+        {
+            var quoted = SqlLiteralFormatter.QuoteIdentifier(name);
+            return new[] { $"s.{quoted} AS [s{index}]", $"t.{quoted} AS [t{index}]" };
+        })));
+        query.Append(" FROM ");
+        query.Append(sourceTable);
+        query.Append(" AS s FULL OUTER JOIN ");
+        query.Append(targetTable);
+        query.Append(" AS t ON ");
+        query.Append(join);
+        query.Append(" WHERE ");
+        query.Append(sourcePresence);
+        query.Append(" OR ");
+        query.Append(targetPresence);
+        query.Append(" OR (");
+        query.Append(string.Join(" AND ", table.KeyColumns.Select(key =>
+        {
+            var quoted = SqlLiteralFormatter.QuoteIdentifier(key);
+            return $"s.{quoted} IS NOT NULL AND t.{quoted} IS NOT NULL";
+        })));
+        query.Append(" AND (");
+        query.Append(differentColumns);
+        query.Append("))");
+
+        var command = connection.CreateCommand();
+        command.CommandText = query.ToString();
+        command.CommandTimeout = options.CommandTimeoutSeconds;
+        return command;
+    }
+
+    private static IReadOnlyDictionary<string, object?> ReadRowValues(
+        SqlDataReader reader,
+        IReadOnlyDictionary<string, int> ordinals,
+        IReadOnlyList<string> columns)
+    {
+        var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in columns)
+        {
+            var ordinal = ordinals[name];
+            values[name] = reader.IsDBNull(ordinal) ? null : reader.GetValue(ordinal);
+        }
+
+        return values;
+    }
+
+    private static IReadOnlyDictionary<string, object?> SelectValues(
+        IReadOnlyDictionary<string, object?> values,
+        IReadOnlyList<ColumnSchemaInfo> columns)
+        => columns.ToDictionary(column => column.Name, column => values[column.Name], StringComparer.OrdinalIgnoreCase);
+
+    private static RowChange CreateServerSideChange(
+        RowChangeKind kind,
+        TableSchemaInfo table,
+        IReadOnlyList<ColumnSchemaInfo> comparableColumns,
+        IReadOnlyList<ColumnSchemaInfo> displayColumns,
+        IReadOnlyDictionary<string, object?>? source,
+        IReadOnlyDictionary<string, object?>? target,
+        IReadOnlyDictionary<string, object?> keySourceValues,
+        IReadOnlyList<ColumnValueChange>? changedColumns = null)
+    {
+        var keyValues = table.KeyColumns.Select(key => keySourceValues[key]).ToList();
+        return new RowChange
+        {
+            Table = table,
+            Kind = kind,
+            KeyValues = keyValues,
+            SourceValues = source is null ? EmptyValues() : SelectValues(source, comparableColumns),
+            TargetValues = target is null ? EmptyValues() : SelectValues(target, comparableColumns),
+            PreviewSourceValues = source is null ? EmptyValues() : SelectValues(source, displayColumns),
+            PreviewTargetValues = target is null ? EmptyValues() : SelectValues(target, displayColumns),
+            ChangedColumns = changedColumns ?? Array.Empty<ColumnValueChange>(),
+            KeyDisplay = BuildKeyDisplay(table, keyValues),
+        };
+    }
+
+    private static bool CanCompareInSqlServer(
+        TableSchemaInfo source,
+        TableSchemaInfo target,
+        IReadOnlyList<ColumnSchemaInfo> columns,
+        ComparisonOptions options)
+    {
+        if (!source.KeyColumns.SequenceEqual(target.KeyColumns, StringComparer.OrdinalIgnoreCase))
+            return false;
+
+        foreach (var name in source.KeyColumns)
+        {
+            var sourceColumn = source.FindColumn(name);
+            var targetColumn = target.FindColumn(name);
+            if (sourceColumn is null || targetColumn is null
+                || !SameSqlType(sourceColumn, targetColumn)
+                || !IsSqlComparableType(sourceColumn, options))
+                return false;
+        }
+
+        foreach (var column in columns)
+        {
+            var targetColumn = target.FindColumn(column.Name);
+            if (targetColumn is null
+                || !SameSqlType(column, targetColumn)
+                || !IsSqlComparableType(column, options))
+                return false;
+        }
+
+        return columns.Count > 0;
+    }
+
+    private static bool SameSqlType(ColumnSchemaInfo left, ColumnSchemaInfo right)
+        => left.DataTypeName.Equals(right.DataTypeName, StringComparison.OrdinalIgnoreCase)
+           && left.MaxLength == right.MaxLength
+           && left.Precision == right.Precision
+           && left.Scale == right.Scale
+           && left.IsMax == right.IsMax;
+
+    private static bool IsSqlComparableType(ColumnSchemaInfo column, ComparisonOptions options)
+    {
+        var type = column.DataTypeName.ToLowerInvariant();
+        if (type is "varchar" or "nvarchar" or "char" or "nchar" or "sysname")
+            return options.CaseSensitiveDataComparison;
+
+        return type is "bit" or "tinyint" or "smallint" or "int" or "bigint"
+            or "decimal" or "numeric" or "money" or "smallmoney"
+            or "float" or "real"
+            or "date" or "time" or "smalldatetime" or "datetime" or "datetime2" or "datetimeoffset"
+            or "uniqueidentifier"
+            or "binary" or "varbinary" or "timestamp" or "rowversion";
+    }
+
+    private static string BuildSqlEquality(string left, string right, ColumnSchemaInfo column)
+    {
+        if (IsStringType(column))
+        {
+            var leftBinary = AsUnicodeBinary(left);
+            var rightBinary = AsUnicodeBinary(right);
+            return $"{leftBinary} = {rightBinary} AND DATALENGTH({leftBinary}) = DATALENGTH({rightBinary})";
+        }
+
+        if (IsBinaryType(column))
+            return $"{left} = {right} AND DATALENGTH({left}) = DATALENGTH({right})";
+
+        return $"{left} = {right}";
+    }
+
+    private static string BuildSqlDifference(string left, string right, ColumnSchemaInfo column)
+    {
+        if (IsStringType(column))
+        {
+            left = AsUnicodeBinary(left);
+            right = AsUnicodeBinary(right);
+        }
+
+        var unequal = IsBinaryType(column) || IsStringType(column)
+            ? $"({left} <> {right} OR DATALENGTH({left}) <> DATALENGTH({right}))"
+            : $"{left} <> {right}";
+
+        return $"({unequal} OR ({left} IS NULL AND {right} IS NOT NULL) OR ({left} IS NOT NULL AND {right} IS NULL))";
+    }
+
+    private static string AsUnicodeBinary(string expression)
+        => $"CONVERT(varbinary(max), CONVERT(nvarchar(max), {expression}))";
+
+    private static bool IsStringType(ColumnSchemaInfo column)
+        => column.DataTypeName.Equals("varchar", StringComparison.OrdinalIgnoreCase)
+           || column.DataTypeName.Equals("nvarchar", StringComparison.OrdinalIgnoreCase)
+           || column.DataTypeName.Equals("char", StringComparison.OrdinalIgnoreCase)
+           || column.DataTypeName.Equals("nchar", StringComparison.OrdinalIgnoreCase)
+           || column.DataTypeName.Equals("sysname", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsBinaryType(ColumnSchemaInfo column)
+        => column.DataTypeName.Equals("binary", StringComparison.OrdinalIgnoreCase)
+           || column.DataTypeName.Equals("varbinary", StringComparison.OrdinalIgnoreCase)
+           || column.DataTypeName.Equals("timestamp", StringComparison.OrdinalIgnoreCase)
+           || column.DataTypeName.Equals("rowversion", StringComparison.OrdinalIgnoreCase);
+
+    private static bool SameServer(string source, string target)
+        => string.Equals(
+            source.Trim().Replace("(local)", ".", StringComparison.OrdinalIgnoreCase),
+            target.Trim().Replace("(local)", ".", StringComparison.OrdinalIgnoreCase),
+            StringComparison.OrdinalIgnoreCase);
+
+    private static bool SameSecurityContext(DatabaseConnectionInfo source, DatabaseConnectionInfo target)
+        => source.UseIntegratedSecurity == target.UseIntegratedSecurity
+           && (source.UseIntegratedSecurity
+               || (string.Equals(source.Username, target.Username, StringComparison.Ordinal)
+                   && string.Equals(source.Password, target.Password, StringComparison.Ordinal)));
+
+    private static SqlCommand CreateCommand(
         SqlConnection connection,
         TableSchemaInfo table,
         IReadOnlyList<ColumnSchemaInfo> columns,
@@ -308,7 +916,7 @@ public sealed class DataComparerService
         command.CommandText = sql.ToString();
         command.CommandTimeout = options.CommandTimeoutSeconds;
 
-        return command.ExecuteReader(CommandBehavior.Default);
+        return command;
     }
 
     private static int CompareKeys(RowBuffer source, RowBuffer target, IReadOnlyList<string> keyColumns, ComparisonOptions options)
@@ -338,15 +946,19 @@ public sealed class DataComparerService
             var left = source[column.Name];
             var right = target[column.Name];
 
-            if (CompareValues(left, right, options) != 0)
+            if (CompareValues(left, right, options, normalizeLineEndings: options.NormalizeLineEndings) != 0)
                 changed.Add(new ColumnValueChange(column.Name, left, right));
         }
 
         return changed;
     }
 
-    /// <summary>Compares two values, normalising strings when a case-insensitive comparison is requested.</summary>
-    internal static int CompareValues(object? left, object? right, ComparisonOptions options)
+    /// <summary>Compares values, optionally treating CRLF and LF as equivalent in strings.</summary>
+    internal static int CompareValues(
+        object? left,
+        object? right,
+        ComparisonOptions options,
+        bool normalizeLineEndings = false)
     {
         var leftNull = left is null or DBNull;
         var rightNull = right is null or DBNull;
@@ -369,6 +981,12 @@ public sealed class DataComparerService
 
         if (left is string leftString && right is string rightString)
         {
+            if (normalizeLineEndings)
+            {
+                leftString = NormalizeLineEndings(leftString);
+                rightString = NormalizeLineEndings(rightString);
+            }
+
             return string.Compare(
                 leftString,
                 rightString,
@@ -382,6 +1000,9 @@ public sealed class DataComparerService
             Convert.ToString(left, CultureInfo.InvariantCulture),
             Convert.ToString(right, CultureInfo.InvariantCulture));
     }
+
+    private static string NormalizeLineEndings(string value)
+        => value.Replace("\r\n", "\n", StringComparison.Ordinal);
 
     private static bool IsNumeric(object? value)
         => value is byte or sbyte or short or ushort or int or uint or long or ulong
@@ -406,7 +1027,8 @@ public sealed class DataComparerService
         TableSchemaInfo table,
         RowBuffer? source,
         RowBuffer? target,
-        IReadOnlyList<ColumnSchemaInfo> columns,
+        IReadOnlyList<ColumnSchemaInfo> comparableColumns,
+        IReadOnlyList<ColumnSchemaInfo> displayColumns,
         ComparisonOptions options,
         IReadOnlyList<ColumnValueChange>? changed = null)
     {
@@ -418,8 +1040,10 @@ public sealed class DataComparerService
             Table = table,
             Kind = kind,
             KeyValues = keyValues,
-            SourceValues = source is null ? EmptyValues() : ToDictionary(source, columns),
-            TargetValues = target is null ? EmptyValues() : ToDictionary(target, columns),
+            SourceValues = source is null ? EmptyValues() : ToDictionary(source, comparableColumns),
+            TargetValues = target is null ? EmptyValues() : ToDictionary(target, comparableColumns),
+            PreviewSourceValues = source is null ? EmptyValues() : ToDictionary(source, displayColumns),
+            PreviewTargetValues = target is null ? EmptyValues() : ToDictionary(target, displayColumns),
             ChangedColumns = changed ?? Array.Empty<ColumnValueChange>(),
             KeyDisplay = BuildKeyDisplay(table, keyValues),
         };
@@ -472,7 +1096,8 @@ public sealed class DataComparerService
             _ordinals = ordinals;
         }
 
-        public bool Read() => _reader.Read();
+        public Task<bool> ReadAsync(CancellationToken cancellationToken)
+            => _reader.ReadAsync(cancellationToken);
 
         public object? this[string columnName]
         {

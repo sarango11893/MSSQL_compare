@@ -15,6 +15,8 @@ public sealed class TableDataDifference
     /// <summary>Non fatal issues, for example a truncated result set.</summary>
     public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
 
+    public bool IsTruncated { get; init; }
+
     public bool IsSkipped => SkipReason is not null;
 
     public int InsertCount => Changes.Count(c => c.Kind == RowChangeKind.Insert);

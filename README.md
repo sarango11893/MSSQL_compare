@@ -174,7 +174,7 @@ exista el runtime **ASP.NET Core 8**. Si prefieres un paquete autocontenido, añ
 2. Elige el modo **Esquema (DDL)** o **Datos (DML)** en el selector superior.
 3. Ajusta las **Opciones de prueba**: eliminar objetos que no están en el origen,
    bloquear si hay posible pérdida de datos, script dentro de transacción, comparación sensible
-   a mayúsculas y máximo de filas por tabla.
+   a mayúsculas y máximo de diferencias guardadas por tabla.
 4. **Ejecutar comparación** muestra las diferencias. Por seguridad, no se selecciona ningún
    objeto ni registro automáticamente y el script queda vacío.
 5. Marca explícitamente los objetos o registros que quieres sincronizar. La búsqueda filtra los
@@ -205,9 +205,36 @@ En modo DDL, las diferencias se pueden ver como matriz o como árbol agrupado po
 
 ### Diferencias de datos (DML)
 
+La comparación exacta recorre las filas comparables de ambos lados en orden de clave; en bases
+grandes puede tardar varios minutos. Durante el proceso, el estado indica la etapa, la tabla actual
+y el número de filas leídas, y **Cancelar** interrumpe las lecturas SQL. **Máximo de diferencias
+guardadas por tabla** limita el resultado acumulado, no las filas que se deben leer para comparar;
+si se alcanza, el resultado se marca incompleto y no genera un script parcial.
+
+Cuando ambos catálogos están en el mismo servidor, se usa una comparación `SELECT` entre bases
+ejecutada en SQL Server para los tipos de datos compatibles. Esto evita transferir a la aplicación
+las filas que coinciden. Requiere que la cuenta tenga permiso de lectura en ambas bases desde la
+misma conexión. Tipos no compatibles o comparación de texto sin distinción de mayúsculas usan el
+comparador exacto existente como alternativa; no se omiten diferencias por muestreo.
+
+La lista editable de tablas DML está en `src/SqlSuite.Web/appsettings.json`, bajo
+`DataComparison:IncludedTables`. Se compara solo esa lista; se aceptan nombres de tabla sin esquema
+(coinciden en cualquier esquema) o `esquema.tabla`. Al ejecutar una publicación desplegada, edita
+el `appsettings.json` situado junto a la aplicación. Los nombres repetidos no son necesarios. Si
+la lista queda vacía, se comparan todas las tablas.
+
 * Los cambios se agrupan por tabla. El checkbox de la cabecera de cada tabla incluye o excluye
   todos sus registros; los checkboxes de fila permiten elegir registros concretos, incluso
   cambios de tipo `INSERT`, `UPDATE` o `DELETE`.
+* Al expandir una tabla, la cuadrícula muestra los nombres reales de todas las columnas y una fila
+  por cada registro diferente. La fila y los encabezados de columnas con cambios se resaltan en rojo;
+  las celdas diferentes usan un resaltado más marcado. Al pulsarlas se abre una vista
+  previa acotada con los valores de destino y origen. La cuadrícula tiene desplazamiento propio
+  para no alargar toda la página.
+* La opción **Tratar CRLF y LF como iguales** está activa por defecto y evita diferencias causadas
+  únicamente por el formato del salto de línea. Al desactivarla, los finales de línea se comparan
+  estrictamente. El resto del contenido, incluidos espacios y mayúsculas según la opción elegida,
+  sigue comparándose.
 * Ningún registro está seleccionado por defecto. **Seleccionar todos** afecta a todos los cambios
   comparables; la búsqueda puede localizar por nombre de tabla, clave, columna o valor y no altera
   la selección.
@@ -225,6 +252,11 @@ En modo DDL, las diferencias se pueden ver como matriz o como árbol agrupado po
   objeto (con el preámbulo `SET …` / `USE [..]` que el script necesita para ejecutarse) y la fila
   queda resaltada. El extracto se obtiene recortando el script ya generado, no volviendo a
   invocar a DacFx, así que es instantáneo.
+* En **Comparar texto**, los paneles de destino (anterior) y origen (nuevo) se distinguen
+  visualmente, las líneas están alineadas con sus números y las líneas largas se ajustan al ancho
+  disponible. Para una diferencia DML también se muestran los valores originales y sus tipos;
+  los espacios al inicio o al final, tabulaciones y saltos de línea se hacen visibles. Si el
+  comparador detectó cambios pero el diff textual no, la vista lo indica explícitamente.
 * El conmutador **Ver script final / Ver script del objeto** alterna entre el script completo de
   la selección actual y el del objeto enfocado.
 * **Copiar** copia al portapapeles lo que el panel está mostrando: el script final o el extracto

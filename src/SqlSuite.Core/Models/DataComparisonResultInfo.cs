@@ -25,7 +25,7 @@ public sealed class DataComparisonResultInfo
     public bool HasSkippedTables => SkippedTables.Count > 0;
 
     /// <summary>True when every table could be compared, so the verdict covers the whole database.</summary>
-    public bool IsComplete => IsValid && !HasSkippedTables;
+    public bool IsComplete => IsValid && !HasSkippedTables && Tables.All(table => !table.IsTruncated);
 
     public bool HasDifferences => Tables.Any(t => t.TotalCount > 0);
 
@@ -61,8 +61,11 @@ public sealed class DataComparisonResultInfo
             var skipped = SkippedTables.Count == 0
                 ? string.Empty
                 : $" ({SkippedTables.Count} tabla(s) omitidas)";
+            var truncated = Tables.Any(table => table.IsTruncated)
+                ? " (resultado incompleto por límite de diferencias)"
+                : string.Empty;
 
-            return $"{InsertCount} inserciones, {UpdateCount} actualizaciones y {DeleteCount} eliminaciones en {Tables.Count} tabla(s){skipped}.";
+            return $"{InsertCount} inserciones, {UpdateCount} actualizaciones y {DeleteCount} eliminaciones en {Tables.Count} tabla(s){skipped}{truncated}.";
         }
     }
 

@@ -62,10 +62,24 @@ public sealed class SchemaComparerService
                 warnings.Add(text);
         }
 
+        bool isValid;
+        bool isEqual = false;
+        try
+        {
+            isValid = raw.IsValid;
+            if (isValid)
+                isEqual = raw.IsEqual;
+        }
+        catch (NullReferenceException ex)
+        {
+            isValid = false;
+            errors.Add($"DacFx no pudo producir un resultado válido de comparación de esquema: {ex.Message}");
+        }
+
         List<SchemaDifferenceInfo> roots = new();
         int propertyLeafCount = 0;
 
-        if (raw.Differences is not null)
+        if (isValid && raw.Differences is not null)
         {
             foreach (SchemaDifference difference in raw.Differences)
             {
@@ -79,6 +93,8 @@ public sealed class SchemaComparerService
 
         return new SchemaComparisonSession(
             raw,
+            isValid,
+            isEqual,
             roots,
             errors,
             warnings,

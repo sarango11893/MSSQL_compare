@@ -20,6 +20,13 @@ public sealed class RowChange
     public IReadOnlyDictionary<string, object?> TargetValues { get; init; }
         = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>All shared column values for visual inspection, including non-writable columns.</summary>
+    public IReadOnlyDictionary<string, object?> PreviewSourceValues { get; init; }
+        = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
+    public IReadOnlyDictionary<string, object?> PreviewTargetValues { get; init; }
+        = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Columns that changed. Only populated for <see cref="RowChangeKind.Update"/>.</summary>
     public IReadOnlyList<ColumnValueChange> ChangedColumns { get; init; } = Array.Empty<ColumnValueChange>();
 

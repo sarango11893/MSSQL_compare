@@ -13,6 +13,7 @@ public sealed class ComparisonOptionsTests
         Assert.True(options.BlockOnPossibleDataLoss);
         Assert.True(options.UseTransactionForDataScript);
         Assert.True(options.IncludeIdentityInsert);
+        Assert.True(options.NormalizeLineEndings);
         Assert.Empty(options.ExcludedTables);
     }
 
@@ -40,6 +41,7 @@ public sealed class ComparisonOptionsTests
             MaxRowsPerTable = 5,
             SkipNonWritableColumns = false,
             CaseSensitiveDataComparison = false,
+            NormalizeLineEndings = false,
             IncludeChangeSummaryComments = false,
         };
 
@@ -65,6 +67,7 @@ public sealed class ComparisonOptionsTests
         Assert.Equal(5, clone.MaxRowsPerTable);
         Assert.False(clone.SkipNonWritableColumns);
         Assert.False(clone.CaseSensitiveDataComparison);
+        Assert.False(clone.NormalizeLineEndings);
         Assert.False(clone.IncludeChangeSummaryComments);
     }
 
@@ -73,11 +76,15 @@ public sealed class ComparisonOptionsTests
     {
         var original = new ComparisonOptions();
         original.ExcludedTables.Add("dbo.Audit");
+        original.IncludedTables.Add("dbo.Orders");
 
         var clone = original.Clone();
         clone.ExcludedTables.Add("dbo.Legacy");
+        clone.IncludedTables.Add("dbo.Customers");
 
         Assert.Equal(new[] { "dbo.Audit" }, original.ExcludedTables);
         Assert.Equal(new[] { "dbo.Audit", "dbo.Legacy" }, clone.ExcludedTables);
+        Assert.Equal(new[] { "dbo.Orders" }, original.IncludedTables);
+        Assert.Equal(new[] { "dbo.Orders", "dbo.Customers" }, clone.IncludedTables);
     }
 }

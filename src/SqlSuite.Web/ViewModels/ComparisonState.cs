@@ -18,6 +18,8 @@ public sealed class ComparisonState
     private readonly ScriptExecutionService _executionService = new();
     private readonly ComparisonOptions _options = new();
     private readonly AdminAccessService _adminAccessService;
+    private readonly ILogger<ComparisonState> _logger;
+    private readonly IConfiguration _configuration;
 
     private ComparisonMode _mode = ComparisonMode.Schema;
     private string _statusMessage = "Listo.";
@@ -49,9 +51,15 @@ public sealed class ComparisonState
     private string _adminLoginMessage = string.Empty;
     private CancellationTokenSource? _cts;
 
-    public ComparisonState(AdminAccessService adminAccessService)
+    public ComparisonState(
+        AdminAccessService adminAccessService,
+        ILogger<ComparisonState> logger,
+        IConfiguration configuration)
     {
         _adminAccessService = adminAccessService;
+        _logger = logger;
+        _configuration = configuration;
+
         Source = new ConnectionState("Origen (source)");
         Target = new ConnectionState("Destino (target)");
     }
@@ -497,6 +505,8 @@ public sealed class ComparisonState
         ? "Comparación de definición DDL"
         : "Comparación de registro DML";
 
+    public RowChange? FocusedDataChange => _focusedDataChange;
+
     public bool CanCompareFocusedText => _focusedDataChange is not null
         || _focusedObject is not null
             && (_focusedObject.SourceScript.Length > 0 || _focusedObject.TargetScript.Length > 0);
@@ -506,6 +516,53 @@ public sealed class ComparisonState
     public int AddedTextLineCount => _focusedTextDiff.Count(line => line.Kind == CodeDiffKind.Added);
 
     public int RemovedTextLineCount => _focusedTextDiff.Count(line => line.Kind == CodeDiffKind.Removed);
+
+    public bool HasDataDifferenceWithoutTextualChange
+        => _focusedDataChange is { Kind: RowChangeKind.Update, ChangedColumns.Count: > 0 }
+            && AddedTextLineCount == 0
+            && RemovedTextLineCount == 0;
+
+    public static string FormatDiffValue(object? value)
+        => value switch
+        {
+            null or DBNull => "NULL",
+            string text => FormatDiffString(text),
+            byte[] bytes => $"0x{Convert.ToHexString(bytes)}",
+            IFormattable formattable => formattable.ToString(null, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+            _ => value.ToString() ?? string.Empty,
+        };
+
+    public static string DescribeDiffValue(object? value)
+        => value switch
+        {
+            null or DBNull => "NULL",
+            string text => $"Texto · {text.Length} caracteres · {System.Text.Encoding.UTF8.GetByteCount(text)} bytes UTF-8",
+            byte[] bytes => $"Binario · {bytes.Length} bytes",
+            DateTime dateTime => $"DateTime · {dateTime.Kind}",
+            DateTimeOffset _ => "DateTimeOffset",
+            _ => value.GetType().Name,
+        };
+
+    private static string FormatDiffString(string value)
+    {
+        if (value.Length == 0)
+            return "\"\"";
+
+        int leadingSpaces = value.Length - value.TrimStart(' ').Length;
+        int trailingSpaces = value.Length - value.TrimEnd(' ').Length;
+        string visible = value
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal)
+            .Replace("\t", "\\t", StringComparison.Ordinal);
+
+        if (leadingSpaces > 0)
+            visible = new string('·', leadingSpaces) + visible[leadingSpaces..];
+
+        if (trailingSpaces > 0)
+            visible = visible[..^trailingSpaces] + new string('·', trailingSpaces);
+
+        return $"\"{visible}\"";
+    }
 
     public void ShowObjectTextDiff(SchemaDifferenceInfo node)
     {
@@ -552,7 +609,9 @@ public sealed class ComparisonState
                 $"{column.ColumnName} = {FormatValue(source ? column.SourceValue : column.TargetValue)}"));
         }
 
-        IReadOnlyDictionary<string, object?> values = source ? change.SourceValues : change.TargetValues;
+        IReadOnlyDictionary<string, object?> values = source
+            ? change.PreviewSourceValues
+            : change.PreviewTargetValues;
         IEnumerable<KeyValuePair<string, object?>> orderedValues = change.Table.Columns
             .Where(column => values.ContainsKey(column.Name))
             .Select(column => new KeyValuePair<string, object?>(column.Name, values[column.Name]));
@@ -1010,6 +1069,19 @@ public sealed class ComparisonState
         }
     }
 
+    public bool NormalizeLineEndings
+    {
+        get => _options.NormalizeLineEndings;
+        set
+        {
+            if (_options.NormalizeLineEndings == value)
+                return;
+
+            _options.NormalizeLineEndings = value;
+            Notify();
+        }
+    }
+
     public int MaxRowsPerTable
     {
         get => _options.MaxRowsPerTable;
@@ -1056,8 +1128,16 @@ public sealed class ComparisonState
         }
         catch (Exception ex)
         {
+            _logger.LogError(
+                ex,
+                "Error al comparar en modo {ComparisonMode}. Origen: {SourceDatabase} en {SourceServer}; destino: {TargetDatabase} en {TargetServer}.",
+                Mode,
+                source.DatabaseName,
+                source.ServerName,
+                target.DatabaseName,
+                target.ServerName);
             StatusMessage = $"Error: {ex.Message}";
-            AddLog("Error", ex.Message);
+            AddLog("Error", ex.ToString());
             Notify();
         }
         finally
@@ -1204,9 +1284,48 @@ public sealed class ComparisonState
         DatabaseConnectionInfo target,
         CancellationToken cancellationToken)
     {
-        var result = await Task.Run(
-            () => _dataComparer.Compare(source, target, _options, cancellationToken),
-            cancellationToken);
+        _options.IncludedTables.Clear();
+        foreach (var table in _configuration.GetSection("DataComparison:IncludedTables")
+                     .GetChildren()
+                     .Select(section => section.Value)
+                     .Where(value => !string.IsNullOrWhiteSpace(value))
+                     .Select(value => value!.Trim())
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            _options.IncludedTables.Add(table);
+        }
+
+        var includedTables = _options.IncludedTables.ToList();
+        if (includedTables.Count > 0)
+        {
+            AddLog("Config", $"Filtro DML activo: {includedTables.Count} nombres de tabla configurados.");
+        }
+
+        var progress = new Progress<DataComparisonProgress>(item =>
+        {
+            var message = item.TableName is null
+                ? item.Stage
+                : $"{item.Stage} · tabla {item.TableIndex}/{item.TableCount}: {item.TableName}";
+
+            if (item.Stage == "Comparando filas")
+            {
+                message += $" · origen {item.SourceRowsRead:N0}, destino {item.TargetRowsRead:N0} filas leídas";
+            }
+            else if (item.Stage == "Diferencias recibidas de SQL Server")
+            {
+                message += $" · {item.SourceRowsRead:N0} diferencias candidatas recibidas";
+            }
+
+            StatusMessage = message;
+            Notify();
+        });
+
+        var result = await _dataComparer.CompareAsync(
+            source,
+            target,
+            _options,
+            cancellationToken,
+            progress);
 
         TableDifferences.AddRange(result.Tables);
         _selectedRows.Clear();
@@ -1222,7 +1341,17 @@ public sealed class ComparisonState
 
         Summary = result.Summary;
         Script = string.Empty;
-        StatusMessage = $"Comparación de datos completada en {result.Duration.TotalSeconds:0.0}s.";
+        if (!result.IsValid)
+        {
+            StatusMessage = "La comparación de datos no se pudo completar. Revise los errores del log.";
+            Notify();
+            return;
+        }
+
+        var truncatedTables = result.Tables.Count(table => table.IsTruncated);
+        StatusMessage = truncatedTables == 0
+            ? $"Comparación de datos completada en {result.Duration.TotalSeconds:0.0}s."
+            : $"Comparación incompleta: se alcanzó el límite de diferencias en {truncatedTables} tabla(s).";
         AddLog("Data", $"{result.InsertCount} inserciones · {result.UpdateCount} actualizaciones · {result.DeleteCount} eliminaciones disponibles en {result.Tables.Count} tabla(s). Ningún registro seleccionado.");
         Notify();
     }

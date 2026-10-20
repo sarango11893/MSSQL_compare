@@ -18,6 +18,8 @@ namespace SqlSuite.Core.Services;
 public sealed class SchemaComparisonSession
 {
     private readonly SchemaComparisonResult _raw;
+    private readonly bool _isValid;
+    private readonly bool _isEqual;
     private readonly List<SchemaDifferenceInfo> _roots;
     private readonly List<string> _baseErrors;
     private readonly List<string> _baseWarnings;
@@ -31,6 +33,8 @@ public sealed class SchemaComparisonSession
 
     internal SchemaComparisonSession(
         SchemaComparisonResult raw,
+        bool isValid,
+        bool isEqual,
         List<SchemaDifferenceInfo> roots,
         List<string> errors,
         List<string> warnings,
@@ -40,6 +44,8 @@ public sealed class SchemaComparisonSession
         bool generateScript)
     {
         _raw = raw;
+        _isValid = isValid;
+        _isEqual = isEqual;
         _roots = roots;
         _baseErrors = errors;
         _baseWarnings = warnings;
@@ -79,7 +85,7 @@ public sealed class SchemaComparisonSession
         List<string> warnings = new(_baseWarnings);
         string script = string.Empty;
 
-        if (_generateScript && _raw.IsValid && !_raw.IsEqual && selected.Count > 0)
+        if (_generateScript && _isValid && !_isEqual && selected.Count > 0)
         {
             string? fullScript = GetFullScript(errors, warnings);
 
@@ -93,10 +99,10 @@ public sealed class SchemaComparisonSession
 
         return new SchemaComparisonResultInfo
         {
-            IsValid = _raw.IsValid,
+            IsValid = _isValid,
             // A partial selection is reported as "not equal" because the deployable subset no longer
             // represents the full database.
-            IsEqual = _raw.IsEqual && skipped.Count == 0,
+            IsEqual = _isEqual && skipped.Count == 0,
             Script = script,
             Differences = _roots,
             Errors = errors,
@@ -161,7 +167,7 @@ public sealed class SchemaComparisonSession
 
     private string BuildSummary(IReadOnlyList<SchemaDifferenceInfo> selected)
     {
-        if (!_raw.IsValid)
+        if (!_isValid)
             return "La comparación no es válida. Revise los errores notificados.";
 
         if (_roots.Count == 0)

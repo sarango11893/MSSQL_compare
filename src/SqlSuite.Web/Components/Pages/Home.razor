@@ -115,10 +115,15 @@
                                @onchange="e => State.CaseSensitiveDataComparison = (bool)(e.Value ?? false)" />
                         <span>Comparación de datos sensible a mayúsculas</span>
                     </label>
+                    <label class="check-row">
+                        <input type="checkbox" checked="@State.NormalizeLineEndings"
+                               @onchange="e => State.NormalizeLineEndings = (bool)(e.Value ?? false)" />
+                        <span>Tratar CRLF y LF como iguales</span>
+                    </label>
                 </div>
 
                 <label class="field">
-                    <span>Máximo de filas por tabla</span>
+                    <span>Máximo de diferencias guardadas por tabla</span>
                     <input type="number" min="1" value="@State.MaxRowsPerTable" @onchange="OnMaxRowsChanged" />
                 </label>
             </section>
@@ -432,16 +437,87 @@
                     }
                     else
                     {
+                        @if (State.IsDataMode && State.FocusedDataChange is { } dataChange)
+                        {
+                            <section class="dml-difference-inspector" aria-label="Valores que provocaron la diferencia">
+                                <div class="dml-difference-inspector-heading">
+                                    <strong>Valores comparados</strong>
+                                    @if (State.HasDataDifferenceWithoutTextualChange)
+                                    {
+                                        <span class="dml-difference-note">
+                                            DML detectó cambios, pero sus representaciones de texto coinciden.
+                                            Revisa el tipo, la longitud y los espacios visibles en los valores.
+                                        </span>
+                                    }
+                                </div>
+                                @if (dataChange.Kind == RowChangeKind.Update)
+                                {
+                                    @foreach (var column in dataChange.ChangedColumns)
+                                    {
+                                        <article class="dml-difference-column">
+                                            <h3>@column.ColumnName</h3>
+                                            <div class="dml-difference-values">
+                                                <div class="dml-difference-value old-value">
+                                                    <span>Anterior · Destino</span>
+                                                    <code>@ComparisonState.FormatDiffValue(column.TargetValue)</code>
+                                                    <small>@ComparisonState.DescribeDiffValue(column.TargetValue)</small>
+                                                </div>
+                                                <div class="dml-difference-value new-value">
+                                                    <span>Nuevo · Origen</span>
+                                                    <code>@ComparisonState.FormatDiffValue(column.SourceValue)</code>
+                                                    <small>@ComparisonState.DescribeDiffValue(column.SourceValue)</small>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    }
+                                }
+                                else
+                                {
+                                    <article class="dml-difference-column">
+                                        <h3>@ComparisonState.RowChangeKindLabel(dataChange)</h3>
+                                        @if (dataChange.Kind == RowChangeKind.Delete)
+                                        {
+                                            @foreach (var column in dataChange.Table.Columns.Where(column => dataChange.PreviewTargetValues.ContainsKey(column.Name)))
+                                            {
+                                                <div class="dml-difference-value old-value">
+                                                    <span>@column.Name · Destino</span>
+                                                    <code>@ComparisonState.FormatDiffValue(dataChange.PreviewTargetValues[column.Name])</code>
+                                                    <small>@ComparisonState.DescribeDiffValue(dataChange.PreviewTargetValues[column.Name])</small>
+                                                </div>
+                                            }
+                                        }
+                                        else
+                                        {
+                                            @foreach (var column in dataChange.Table.Columns.Where(column => dataChange.PreviewSourceValues.ContainsKey(column.Name)))
+                                            {
+                                                <div class="dml-difference-value new-value">
+                                                    <span>@column.Name · Origen</span>
+                                                    <code>@ComparisonState.FormatDiffValue(dataChange.PreviewSourceValues[column.Name])</code>
+                                                    <small>@ComparisonState.DescribeDiffValue(dataChange.PreviewSourceValues[column.Name])</small>
+                                                </div>
+                                            }
+                                        }
+                                    </article>
+                                }
+                            </section>
+                        }
                         <div class="text-diff-legend">
-                            <span><i class="diff-swatch removed"></i> Anterior · Destino</span>
-                            <span><i class="diff-swatch added"></i> Nuevo · Origen</span>
+                            <span><i class="diff-swatch removed"></i> Línea eliminada</span>
+                            <span><i class="diff-swatch added"></i> Línea añadida</span>
                         </div>
                         <div class="text-diff-scroll">
-                            <table class="text-diff-table" aria-label="Diferencias entre definiciones anteriores y nuevas">
+                            <table class="text-diff-table @(State.IsDataMode ? "text-diff-data" : null)"
+                                   aria-label="Diferencias entre definiciones anteriores y nuevas">
+                                <colgroup>
+                                    <col class="diff-number-column" />
+                                    <col class="diff-code-column" />
+                                    <col class="diff-number-column" />
+                                    <col class="diff-code-column" />
+                                </colgroup>
                                 <thead>
                                     <tr>
-                                        <th colspan="2">Anterior · Destino</th>
-                                        <th colspan="2">Nuevo · Origen</th>
+                                        <th class="diff-side-header old-side" colspan="2">Anterior · Destino</th>
+                                        <th class="diff-side-header new-side" colspan="2">Nuevo · Origen</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -450,9 +526,9 @@
                                         var kind = line.Kind.ToString().ToLowerInvariant();
                                         <tr class="diff-line @kind">
                                             <td class="diff-line-number">@line.OldLineNumber</td>
-                                            <td class="diff-code"><pre>@line.OldText</pre></td>
+                                            <td class="diff-code"><pre>@(line.OldText ?? " ")</pre></td>
                                             <td class="diff-line-number">@line.NewLineNumber</td>
-                                            <td class="diff-code"><pre>@line.NewText</pre></td>
+                                            <td class="diff-code"><pre>@(line.NewText ?? " ")</pre></td>
                                         </tr>
                                     }
                                 </tbody>

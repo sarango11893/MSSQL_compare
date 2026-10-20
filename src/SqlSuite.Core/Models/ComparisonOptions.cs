@@ -59,8 +59,14 @@ public sealed class ComparisonOptions
     /// <summary>Wrap the generated data script in a transaction.</summary>
     public bool UseTransactionForDataScript { get; set; } = true;
 
-    /// <summary>Maximum number of rows read per table. Guards against accidentally comparing huge tables.</summary>
+    /// <summary>Maximum differences retained per table; the exact comparison may read more rows.</summary>
     public int MaxRowsPerTable { get; set; } = 100_000;
+
+    /// <summary>
+    /// Optional DML table allowlist. Bare names match any schema; schema-qualified names match
+    /// only that schema and table. An empty list compares every table.
+    /// </summary>
+    public IList<string> IncludedTables { get; } = new List<string>();
 
     /// <summary>Include comparable columns only (skip computed, rowversion, generated always).</summary>
     public bool SkipNonWritableColumns { get; set; } = true;
@@ -74,6 +80,9 @@ public sealed class ComparisonOptions
     /// matching a <c>..._CI_...</c> collation.
     /// </summary>
     public bool CaseSensitiveDataComparison { get; set; } = true;
+
+    /// <summary>Treat CRLF and LF as equivalent when comparing string values.</summary>
+    public bool NormalizeLineEndings { get; set; } = true;
 
     /// <summary>Include a <c>SELECT</c> of the row count in the generated script header.</summary>
     public bool IncludeChangeSummaryComments { get; set; } = true;
@@ -101,11 +110,15 @@ public sealed class ComparisonOptions
             MaxRowsPerTable = MaxRowsPerTable,
             SkipNonWritableColumns = SkipNonWritableColumns,
             CaseSensitiveDataComparison = CaseSensitiveDataComparison,
+            NormalizeLineEndings = NormalizeLineEndings,
             IncludeChangeSummaryComments = IncludeChangeSummaryComments,
         };
 
         foreach (var table in ExcludedTables)
             clone.ExcludedTables.Add(table);
+
+        foreach (var table in IncludedTables)
+            clone.IncludedTables.Add(table);
 
         return clone;
     }

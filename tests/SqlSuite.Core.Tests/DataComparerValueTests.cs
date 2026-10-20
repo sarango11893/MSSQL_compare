@@ -5,8 +5,16 @@ namespace SqlSuite.Core.Tests;
 
 public sealed class DataComparerValueTests
 {
-    private static readonly ComparisonOptions CaseSensitive = new() { CaseSensitiveDataComparison = true };
-    private static readonly ComparisonOptions CaseInsensitive = new() { CaseSensitiveDataComparison = false };
+    private static readonly ComparisonOptions CaseSensitive = new()
+    {
+        CaseSensitiveDataComparison = true,
+        NormalizeLineEndings = false,
+    };
+    private static readonly ComparisonOptions CaseInsensitive = new()
+    {
+        CaseSensitiveDataComparison = false,
+        NormalizeLineEndings = false,
+    };
 
     [Fact]
     public void BothNull_AreEqual()
@@ -34,6 +42,35 @@ public sealed class DataComparerValueTests
     {
         Assert.NotEqual(0, DataComparerService.CompareValues("abc", "ABC", CaseSensitive));
         Assert.Equal(0, DataComparerService.CompareValues("abc", "ABC", CaseInsensitive));
+    }
+
+    [Fact]
+    public void Strings_CanTreatCrLfAndLfAsEquivalent()
+    {
+        const string windowsLineEndings = "line one\r\nline two\r\nline three";
+        const string unixLineEndings = "line one\nline two\nline three";
+
+        Assert.NotEqual(0, DataComparerService.CompareValues(windowsLineEndings, unixLineEndings, CaseSensitive));
+        Assert.Equal(0, DataComparerService.CompareValues(
+            windowsLineEndings,
+            unixLineEndings,
+            CaseSensitive,
+            normalizeLineEndings: true));
+    }
+
+    [Fact]
+    public void StringLineEndingNormalization_DoesNotIgnoreOtherDifferences()
+    {
+        Assert.NotEqual(0, DataComparerService.CompareValues(
+            "line one\r\n",
+            "line one \n",
+            CaseSensitive,
+            normalizeLineEndings: true));
+        Assert.NotEqual(0, DataComparerService.CompareValues(
+            "line one\r",
+            "line one\n",
+            CaseSensitive,
+            normalizeLineEndings: true));
     }
 
     [Fact]
