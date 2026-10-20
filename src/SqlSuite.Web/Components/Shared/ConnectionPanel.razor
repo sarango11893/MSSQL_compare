@@ -1,0 +1,77 @@
+@* Connection form for one side of the comparison. *@
+<div class="conn-panel">
+    <h3>@Connection.Title</h3>
+
+    <label class="field">
+        <span>Servidor</span>
+        <input type="text" value="@Connection.ServerName"
+               @onchange="e => { Connection.ServerName = e.Value?.ToString() ?? string.Empty; }" />
+    </label>
+
+    <label class="field">
+        <span>Base de datos</span>
+        <input type="text" list="@listId" value="@Connection.DatabaseName"
+               @onchange="e => { Connection.DatabaseName = e.Value?.ToString() ?? string.Empty; }" />
+        <datalist id="@listId">
+            @foreach (var database in Connection.Databases)
+            {
+                <option value="@database"></option>
+            }
+        </datalist>
+    </label>
+
+    <label class="check-row">
+        <input type="checkbox" checked="@Connection.UseIntegratedSecurity"
+               @onchange="e => { Connection.UseIntegratedSecurity = (bool)(e.Value ?? false); }" />
+        <span>Autenticación integrada</span>
+    </label>
+
+    @if (!Connection.UseIntegratedSecurity)
+    {
+        <label class="field">
+            <span>Usuario</span>
+            <input type="text" value="@Connection.Username"
+                   @onchange="e => { Connection.Username = e.Value?.ToString() ?? string.Empty; }" />
+        </label>
+
+        <label class="field">
+            <span>Contraseña</span>
+            <input type="password" value="@Connection.Password" autocomplete="off"
+                   @onchange="e => { Connection.Password = e.Value?.ToString() ?? string.Empty; }" />
+        </label>
+    }
+
+    <div class="conn-actions">
+        <button class="btn" disabled="@Connection.IsBusy" @onclick="TestAsync">Probar</button>
+        <button class="btn" disabled="@Connection.IsBusy" @onclick="LoadDatabasesAsync">Bases de datos</button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(Connection.StatusMessage))
+    {
+        <div class="conn-status @(Connection.StatusMessage.StartsWith("Error") ? "bad" : "good")">
+            @Connection.StatusMessage
+        </div>
+    }
+</div>
+
+@code {
+    private readonly string listId = $"db-{Guid.NewGuid():N}";
+
+    [Parameter, EditorRequired]
+    public ConnectionState Connection { get; set; } = default!;
+
+    private async Task TestAsync()
+    {
+        await Connection.TestConnectionAsync();
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task LoadDatabasesAsync()
+    {
+        await Connection.LoadDatabasesAsync();
+        await OnChanged.InvokeAsync();
+    }
+
+    [Parameter]
+    public EventCallback OnChanged { get; set; }
+}

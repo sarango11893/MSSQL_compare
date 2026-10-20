@@ -1,0 +1,108 @@
+@* DML changes grouped by table with explicit table-level and row-level selection. *@
+@if (Groups.Count == 0)
+{
+    <div class="empty-state">
+        <span class="empty-icon">⏳</span>
+        <span class="empty-title">No hay registros coincidentes</span>
+        <span class="empty-text">Ejecuta una comparación o cambia la búsqueda.</span>
+    </div>
+}
+else
+{
+    <div class="data-groups">
+        @foreach (var group in Groups)
+        {
+            var table = group.Table;
+            var selectedCount = SelectedCount(table);
+
+            @if (table.IsSkipped)
+            {
+                <section class="data-table-group skipped">
+                    <div class="data-table-heading">
+                        <span class="endpoint-dot offline"></span>
+                        <span class="data-table-name">@table.Table.QualifiedName</span>
+                        <span class="badge drop">OMITIDA</span>
+                        <span class="data-table-meta">@table.SkipReason</span>
+                    </div>
+                </section>
+            }
+            else
+            {
+                <details class="data-table-group" open>
+                    <summary class="data-table-heading">
+                        <input class="col-check table-check"
+                               type="checkbox"
+                               checked="@(table.TotalCount > 0 && selectedCount == table.TotalCount)"
+                               aria-label="@($"Seleccionar todos los registros de {table.Table.QualifiedName}")"
+                               @onclick:stopPropagation="true"
+                               @onchange="e => OnTableSelection.InvokeAsync((table, (bool)(e.Value ?? false)))" />
+                        <span class="data-table-name">@table.Table.QualifiedName</span>
+                        <span class="data-table-meta">@table.Table.KeySource · @string.Join(", ", table.Table.KeyColumns)</span>
+                        <span class="data-table-count">@selectedCount / @table.TotalCount seleccionados</span>
+                    </summary>
+
+                    @if (group.Changes.Count == 0)
+                    {
+                        <p class="data-table-empty">
+                            @(table.TotalCount == 0
+                                ? "No hay diferencias en esta tabla."
+                                : "Ningún registro coincide con la búsqueda actual.")
+                        </p>
+                    }
+                    else
+                    {
+                        <div class="data-table-scroll">
+                            <table class="grid data-grid">
+                                <thead>
+                                    <tr>
+                                        <th class="cell-check"></th>
+                                        <th>Acción</th>
+                                        <th>Clave del registro</th>
+                                        <th>Valores / diferencias</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var change in group.Changes)
+                                    {
+                                        <tr class="@(!IsSelected(change) ? "row-unselected" : null)">
+                                            <td class="cell-check">
+                                                <input class="col-check" type="checkbox"
+                                                       checked="@IsSelected(change)"
+                                                       aria-label="@($"Incluir registro {change.KeyDisplay} de {table.Table.QualifiedName}")"
+                                                       @onchange="e => OnRowSelection.InvokeAsync((change, (bool)(e.Value ?? false)))" />
+                                            </td>
+                                            <td>
+                                                <span class="badge @ComparisonState.RowChangeKindClass(change)">
+                                                    @ComparisonState.RowChangeKindLabel(change)
+                                                </span>
+                                            </td>
+                                            <td class="row-key">@change.KeyDisplay</td>
+                                            <td class="row-values">@ComparisonState.RowChangeDetails(change)</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </details>
+            }
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<FilteredDataTableGroup> Groups { get; set; } = Array.Empty<FilteredDataTableGroup>();
+
+    [Parameter, EditorRequired]
+    public Func<RowChange, bool> IsSelected { get; set; } = _ => false;
+
+    [Parameter, EditorRequired]
+    public Func<TableDataDifference, int> SelectedCount { get; set; } = _ => 0;
+
+    [Parameter]
+    public EventCallback<(RowChange Change, bool Selected)> OnRowSelection { get; set; }
+
+    [Parameter]
+    public EventCallback<(TableDataDifference Table, bool Selected)> OnTableSelection { get; set; }
+}

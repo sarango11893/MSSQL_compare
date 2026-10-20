@@ -1,0 +1,85 @@
+=====================================================
+ESTRUCTURA DEL PROYECTO: LOCAL SQL SUITE
+=====================================================
+
+SqlSuiteApp/
+├── SqlSuiteApp.sln
+│
+├── docs/
+│   ├── PRD.txt                         (Requisitos del producto)
+│   └── Estructura_Proyecto.txt         (Este archivo)
+│
+├── src/
+│   ├── SqlSuite.Core/                  [Biblioteca .NET 8 - sin dependencia de UI]
+│   │   ├── Enums/
+│   │   │   ├── ComparisonMode.cs       (Enum: Schema, Data)
+│   │   │   ├── SchemaUpdateAction.cs   (Enum: Create, Alter, Drop)
+│   │   │   └── RowChangeKind.cs        (Enum: Insert, Update, Delete)
+│   │   ├── Models/
+│   │   │   ├── DatabaseConnectionInfo.cs
+│   │   │   ├── ComparisonOptions.cs
+│   │   │   ├── SchemaDifferenceInfo.cs
+│   │   │   ├── SchemaComparisonResultInfo.cs
+│   │   │   ├── ColumnSchemaInfo.cs
+│   │   │   ├── TableSchemaInfo.cs
+│   │   │   ├── ColumnValueChange.cs
+│   │   │   ├── RowChange.cs
+│   │   │   ├── TableDataDifference.cs
+│   │   │   └── DataComparisonResultInfo.cs
+│   │   └── Services/
+│   │       ├── SchemaComparerService.cs    ([DacFx] Comparación de esquemas DDL)
+│   │       ├── DataComparerService.cs      ([SqlClient] Diff de filas en streaming)
+│   │       ├── DatabaseConnectionService.cs
+│   │       ├── DacModelReader.cs           ([DacFx] Tablas y columnas comparables)
+│   │       ├── DataScriptGenerator.cs      (Script DML en transacción)
+│   │       ├── SqlLiteralFormatter.cs      (Literales T-SQL seguros)
+│   │       ├── SqlCmdScriptProcessor.cs    (Normaliza y trocea el script de DacFx)
+│   │       └── ScriptExecutionService.cs   (Ejecución lote a lote)
+│   │
+│   └── SqlSuite.Web/                   [Blazor Server - .NET 8, multiplataforma]
+│       ├── SqlSuite.Web.csproj
+│       ├── Program.cs                  (DI, Razor Components, modo interactivo Server)
+│       ├── ViewModels/
+│       │   ├── ConnectionState.cs      (Probar conexión y listar bases de datos)
+│       │   └── ComparisonState.cs      (Modo, opciones, comparar, aplicar, mensajes)
+│       ├── Components/
+│       │   ├── App.razor
+│       │   ├── Routes.razor
+│       │   ├── _Imports.razor
+│       │   ├── Layout/
+│       │   │   └── MainLayout.razor
+│       │   ├── Pages/
+│       │   │   ├── Home.razor          (Shell principal con selector de modo)
+│       │   │   └── Error.razor
+│       │   └── Shared/
+│       │       ├── ConnectionPanel.razor
+│       │       ├── SchemaDiffTree.razor
+│       │       ├── DataDiffTable.razor
+│       │       └── ScriptPanel.razor
+│       └── wwwroot/
+│           ├── app.css                 (Layout de 3 paneles y paleta)
+│           └── js/
+│               └── clipboard.js        (Copiar / seleccionar el script)
+│
+└── tests/
+    └── SqlSuite.Core.Tests/            [xUnit - 52 pruebas]
+        ├── SqlSuite.Core.Tests.csproj
+        ├── ComparisonOptionsTests.cs
+        ├── DataComparerValueTests.cs
+        ├── DataScriptGeneratorTests.cs
+        ├── DatabaseConnectionInfoTests.cs
+        ├── SqlCmdScriptProcessorTests.cs
+        └── SqlLiteralFormatterTests.cs
+
+-----------------------------------------------------
+NOTAS
+-----------------------------------------------------
+* El proyecto WPF original (src/SqlSuite.UI) fue eliminado: solo se podía ejecutar
+  en Windows. La interfaz actual es Blazor Server y corre en macOS, Linux y Windows.
+
+* DacFx y Microsoft.Data.SqlClient se ejecutan en el servidor; el navegador solo
+  recibe HTML y eventos por SignalR. Por eso la app necesita el runtime de
+  ASP.NET Core, no WebAssembly.
+
+* Ejecutar:  dotnet run --project src/SqlSuite.Web
+  Abrir:     http://localhost:5199

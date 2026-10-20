@@ -1,0 +1,90 @@
+@* Schema differences grouped by object type, collapsible and individually selectable. *@
+
+<div class="tree-shell">
+    @if (Groups.Count == 0)
+    {
+        <p class="empty">@EmptyMessage</p>
+    }
+    else
+    {
+        @foreach (var group in Groups)
+        {
+            var collapsed = IsCollapsed(group.ObjectType);
+
+            <section class="tree-group">
+                <div class="tree-group-header" role="button" tabindex="0"
+                     aria-expanded="@(collapsed ? "false" : "true")"
+                     @onclick="() => OnToggleGroup.InvokeAsync(group.ObjectType)">
+                    <span class="chevron @(collapsed ? "collapsed" : null)">▸</span>
+
+                    <input class="col-check" type="checkbox"
+                           checked="@AllSelected(group)"
+                           aria-label="@($"Incluir todo el grupo {group.Label}")"
+                           @onclick:stopPropagation="true"
+                           @onchange="e => OnGroupSelection.InvokeAsync((group, (bool)(e.Value ?? false)))" />
+
+                    <span class="group-label">@group.Label</span>
+                    <span class="group-count">@group.Count</span>
+
+                    <span class="group-badges">
+                        @if (group.CreateCount > 0)
+                        {
+                            <span class="badge create">@group.CreateCount</span>
+                        }
+                        @if (group.AlterCount > 0)
+                        {
+                            <span class="badge alter">@group.AlterCount</span>
+                        }
+                        @if (group.DropCount > 0)
+                        {
+                            <span class="badge drop">@group.DropCount</span>
+                        }
+                    </span>
+                </div>
+
+                @if (!collapsed)
+                {
+                    <ul class="tree">
+                        @foreach (var node in group.Nodes)
+                        {
+                            <SchemaDiffNode Node="node" Selectable="true" ShowType="false"
+                                            IsSelected="IsSelected" IsFocused="IsFocused"
+                                            OnToggle="OnToggleObject" OnFocus="OnFocusObject" />
+                        }
+                    </ul>
+                }
+            </section>
+        }
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<SchemaDiffGroup> Groups { get; set; } = Array.Empty<SchemaDiffGroup>();
+
+    [Parameter, EditorRequired]
+    public Func<SchemaDifferenceInfo, bool> IsSelected { get; set; } = _ => true;
+
+    [Parameter]
+    public Func<SchemaDifferenceInfo, bool> IsFocused { get; set; } = _ => false;
+
+    [Parameter, EditorRequired]
+    public Func<string, bool> IsCollapsed { get; set; } = _ => false;
+
+    [Parameter]
+    public string EmptyMessage { get; set; } = "Sin objetos que coincidan con la búsqueda.";
+
+    [Parameter]
+    public EventCallback<string> OnToggleGroup { get; set; }
+
+    [Parameter]
+    public EventCallback<(SchemaDifferenceInfo Node, bool Selected)> OnToggleObject { get; set; }
+
+    [Parameter]
+    public EventCallback<(SchemaDiffGroup Group, bool Selected)> OnGroupSelection { get; set; }
+
+    [Parameter]
+    public EventCallback<SchemaDifferenceInfo> OnFocusObject { get; set; }
+
+    private bool AllSelected(SchemaDiffGroup group) => group.Nodes.All(IsSelected);
+}

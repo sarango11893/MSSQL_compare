@@ -1,0 +1,24 @@
+=====================================================
+PRODUCT REQUIREMENTS DOCUMENT (PRD): LOCAL SQL SUITE
+=====================================================
+1. OBJECTIVE:
+Build a desktop application in .NET 8 (WPF / MVVM) that unifies
+Schema Compare (DDL) and Data Compare (DML) for Microsoft SQL Server,
+acting as a local alternative to Redgate SQL Compare and SQL Data Compare.
+
+2. CORE MODULES:
+- Module A: Schema Compare (DDL)
+  * Uses Microsoft.SqlServer.DacFx to compare database structures.
+  * Detects objects to Create, Alter, or Drop.
+  * Generates deployment T-SQL scripts respecting object dependencies.
+
+- Module B: Data Compare (DML)
+  * Extracts tables with Primary Keys / Unique Indexes via DacFx.
+  * Compares row data efficiently using SqlDataReader streaming.
+  * Classifies rows into: Insert, Update, or Delete.
+  * Generates safe transaction-wrapped T-SQL sync scripts.
+
+3. TECH STACK:
+- Language: C# (.NET 8)
+- UI Framework: WPF (Windows Presentation Foundation)
+- Libraries: Microsoft.SqlServer.DacFx, Microsoft.Data.SqlClient

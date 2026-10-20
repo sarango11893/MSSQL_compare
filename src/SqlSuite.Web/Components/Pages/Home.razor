@@ -1,0 +1,552 @@
+@page "/"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject ComparisonState State
+
+<PageTitle>SQL Suite · Comparador de esquemas y datos</PageTitle>
+
+<div class="shell">
+
+    <header class="titlebar">
+        <div class="titlebar-brand">
+            <span class="dot-mark"></span>
+            <span>SQL Suite Test Runner</span>
+        </div>
+
+        <div class="titlebar-center">
+            <div class="mode-switch" role="group" aria-label="Modo de comparación">
+                <button class="@(State.IsDataMode ? null : "active")"
+                        @onclick="() => ChangeMode(ComparisonMode.Schema)">
+                    Esquema<small>DDL</small>
+                </button>
+                <button class="@(State.IsDataMode ? "active" : null)"
+                        @onclick="() => ChangeMode(ComparisonMode.Data)">
+                    Datos<small>DML</small>
+                </button>
+            </div>
+        </div>
+
+        <div class="titlebar-actions">
+            <button class="icon-btn" title="Refrescar el estado de los contenedores"
+                    disabled="@State.IsBusy" @onclick="RefreshHealthAsync">⟳</button>
+            <button class="icon-btn" title="Limpiar resultados y log"
+                    @onclick="State.ResetResults">🗑</button>
+            <button class="icon-btn" @onclick="State.ShowConnectionDrawer">
+                ⚙ Conexiones
+            </button>
+        </div>
+    </header>
+
+    <div class="endpoint-bar">
+        <div class="app-identity">
+            <span class="logo-mark">🗄</span>
+            <span class="product-name">SQL Suite</span>
+            <span class="version-badge">v1.9-TestRunner</span>
+        </div>
+
+        <div class="endpoint-chip" title="@State.Source.StatusMessage">
+            <span class="endpoint-dot @State.Source.Health.CssClass()"></span>
+            <span class="endpoint-side">Origen</span>
+            <span class="endpoint-name">@SourceName</span>
+            <span class="endpoint-target">@State.Source.EndpointLabel</span>
+        </div>
+
+        <span class="endpoint-arrow">→</span>
+
+        <div class="endpoint-chip" title="@State.Target.StatusMessage">
+            <span class="endpoint-dot @State.Target.Health.CssClass()"></span>
+            <span class="endpoint-side">Destino</span>
+            <span class="endpoint-name">@TargetName</span>
+            <span class="endpoint-target">@State.Target.EndpointLabel</span>
+        </div>
+
+        <div class="endpoint-actions">
+            <button class="icon-btn" title="Volver a probar la conexión de ambos lados"
+                    disabled="@State.IsBusy" @onclick="RefreshHealthAsync">⟳</button>
+            <button class="icon-btn" @onclick="State.ShowConnectionDrawer">Editar</button>
+        </div>
+    </div>
+
+    <div class="workspace">
+
+        <aside class="rail">
+
+            <section class="rail-section">
+                <span class="rail-title">Modo de comparación</span>
+                <div class="mode-switch">
+                    <button class="@(State.IsSchemaMode ? "active" : null)"
+                            @onclick="() => ChangeMode(ComparisonMode.Schema)">
+                        Esquema<small>DDL</small>
+                    </button>
+                    <button class="@(State.IsDataMode ? "active" : null)"
+                            @onclick="() => ChangeMode(ComparisonMode.Data)">
+                        Datos<small>DML</small>
+                    </button>
+                </div>
+            </section>
+
+            <section class="rail-section">
+                <span class="rail-title">Opciones de prueba</span>
+                <div class="option-list">
+                    <label class="check-row">
+                        <input type="checkbox" checked="@State.DropObjectsNotInSource"
+                               @onchange="e => State.DropObjectsNotInSource = (bool)(e.Value ?? false)" />
+                        <span>Eliminar objetos ausentes en el origen</span>
+                    </label>
+                    <label class="check-row">
+                        <input type="checkbox" checked="@State.BlockOnPossibleDataLoss"
+                               @onchange="e => State.BlockOnPossibleDataLoss = (bool)(e.Value ?? false)" />
+                        <span>Bloquear si hay posible pérdida de datos</span>
+                    </label>
+                    <label class="check-row">
+                        <input type="checkbox" checked="@State.IncludeTransactionalScripts"
+                               @onchange="e => State.IncludeTransactionalScripts = (bool)(e.Value ?? false)" />
+                        <span>Envolver el script en una transacción</span>
+                    </label>
+                    <label class="check-row">
+                        <input type="checkbox" checked="@State.CaseSensitiveDataComparison"
+                               @onchange="e => State.CaseSensitiveDataComparison = (bool)(e.Value ?? false)" />
+                        <span>Comparación de datos sensible a mayúsculas</span>
+                    </label>
+                </div>
+
+                <label class="field">
+                    <span>Máximo de filas por tabla</span>
+                    <input type="number" min="1" value="@State.MaxRowsPerTable" @onchange="OnMaxRowsChanged" />
+                </label>
+            </section>
+
+            <section class="rail-section">
+                <button class="run-btn" disabled="@(!State.CanCompare)" @onclick="CompareAsync">
+                    @(State.IsBusy ? "Ejecutando…" : "▶  Ejecutar comparación")
+                </button>
+                <button class="run-btn secondary" disabled="@(!State.IsBusy)" @onclick="State.Cancel">
+                    Cancelar
+                </button>
+            </section>
+
+            <section class="rail-section">
+                <span class="rail-title">Presets de prueba</span>
+                <div class="preset-list">
+                    @foreach (var preset in State.Presets)
+                    {
+                        <button class="preset-item @(preset.Name == State.ActivePresetName ? "active" : null)"
+                                title="@preset.Description"
+                                disabled="@State.IsBusy"
+                                @onclick="() => ApplyPreset(preset)">
+                            <span class="preset-icon">◈</span>
+                            <span class="preset-name">@preset.Name</span>
+                            <span class="preset-tag">@preset.Tag</span>
+                        </button>
+                    }
+                </div>
+            </section>
+
+            <div class="rail-spacer"></div>
+
+            <section class="rail-section">
+                <span class="rail-title">Estado de los contenedores</span>
+                <div class="container-list">
+                    <div class="container-card">
+                        <span class="endpoint-dot @State.Source.Health.CssClass()"></span>
+                        <div>
+                            <div class="container-name">@SourceName</div>
+                            <div class="container-target">@State.Source.ServerName</div>
+                        </div>
+                        <span class="container-state @State.Source.Health.CssClass()">
+                            @State.Source.Health.Label()
+                        </span>
+                    </div>
+                    <div class="container-card">
+                        <span class="endpoint-dot @State.Target.Health.CssClass()"></span>
+                        <div>
+                            <div class="container-name">@TargetName</div>
+                            <div class="container-target">@State.Target.ServerName</div>
+                        </div>
+                        <span class="container-state @State.Target.Health.CssClass()">
+                            @State.Target.Health.Label()
+                        </span>
+                    </div>
+                </div>
+            </section>
+        </aside>
+
+        <main class="content">
+
+            <div class="tab-strip">
+                <button class="tab @(State.ActiveTab == WorkspaceTab.Visualizer ? "active" : null)"
+                        @onclick="() => State.ShowTab(WorkspaceTab.Visualizer)">
+                    ⚡ Comparison Visualizer
+                    <span class="tab-count">@State.MatrixRowCount</span>
+                </button>
+                <button class="tab @(State.ActiveTab == WorkspaceTab.Script ? "active" : null)"
+                        @onclick="() => State.ShowTab(WorkspaceTab.Script)">
+                    🗄 Generated T-SQL Sync Script
+                </button>
+            </div>
+
+            @if (State.ActiveTab == WorkspaceTab.Visualizer)
+            {
+                <div class="kpi-row">
+                    <div class="kpi-card">
+                        <div class="kpi-label">@State.ObjectsInspectedLabel</div>
+                        <div class="kpi-value">@State.ObjectsInspected</div>
+                        <div class="kpi-hint">@(State.IsSchemaMode ? "Objetos con diferencias" : "Tablas analizadas")</div>
+                    </div>
+                    <div class="kpi-card create">
+                        <div class="kpi-label">@(State.IsSchemaMode ? "Solo en origen" : "Inserciones")</div>
+                        <div class="kpi-value">@State.SourceOnlyCount</div>
+                        <div class="kpi-hint">@(State.IsSchemaMode ? "Se crearán en el destino" : "Filas a insertar")</div>
+                    </div>
+                    <div class="kpi-card alter">
+                        <div class="kpi-label">Modificados / diferencias</div>
+                        <div class="kpi-value">@State.ModifiedCount</div>
+                        <div class="kpi-hint">@(State.IsSchemaMode ? "Se actualizarán" : "Filas a actualizar")</div>
+                    </div>
+                    <div class="kpi-card drop">
+                        <div class="kpi-label">@(State.IsSchemaMode ? "Solo en destino" : "Eliminaciones")</div>
+                        <div class="kpi-value">@State.TargetOnlyCount</div>
+                        <div class="kpi-hint">@(State.IsSchemaMode ? "Se eliminarán del destino" : "Filas a eliminar")</div>
+                    </div>
+                </div>
+
+                <section class="panel">
+                    <div class="panel-head">
+                        <span class="panel-title">Diff Results Matrix</span>
+                        <span class="panel-meta">@ModeLabel(State.Mode)</span>
+                        <span class="spacer"></span>
+                        @if (State.IsSchemaMode && State.HasSchemaSelection)
+                        {
+                            <span class="panel-meta">@State.SelectedObjectCount / @State.TotalObjectCount en el script</span>
+                        }
+                    </div>
+
+                    @if (!State.HasSchemaSelection && !State.HasMatrixRows)
+                    {
+                        <div class="empty-state">
+                            <span class="empty-icon">⏳</span>
+                            <span class="empty-title">Sin resultados todavía</span>
+                            <span class="empty-text">
+                                Pulsa «Ejecutar comparación» en la barra lateral para lanzar el escenario.
+                            </span>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="tree-toolbar">
+                            <input class="tree-search" type="search"
+                                   placeholder="@(State.IsSchemaMode ? "Buscar objeto…" : "Buscar tabla, registro o valor…")"
+                                   aria-label="Buscar objetos, tablas, claves o valores"
+                                   value="@State.SearchTerm"
+                                   @oninput="OnSearchInput" />
+
+                            @if (State.HasSearchTerm)
+                            {
+                                <span class="tree-toolbar-info">@State.SearchMatchCount coincidencia(s)</span>
+                                <button class="btn small" @onclick="State.ClearSearch">Limpiar</button>
+                            }
+
+                            <span class="spacer"></span>
+                            @if (State.IsSchemaMode)
+                            {
+                                <span class="tree-toolbar-info">@State.SelectedObjectCount / @State.TotalObjectCount objetos incluidos</span>
+                                <div class="segmented" role="group" aria-label="Vista de los resultados">
+                                    <button class="btn small @(State.UseTreeView ? null : "active")"
+                                            @onclick="() => State.UseTreeView = false">Matriz</button>
+                                    <button class="btn small @(State.UseTreeView ? "active" : null)"
+                                            @onclick="() => State.UseTreeView = true">Árbol</button>
+                                </div>
+                                <button class="btn small" disabled="@(State.IsBusy || State.IsRegeneratingScript)"
+                                        @onclick="State.SelectAllObjects">Seleccionar todo</button>
+                                <button class="btn small" disabled="@(State.IsBusy || State.IsRegeneratingScript)"
+                                        @onclick="State.SelectNoObjects">Ninguno</button>
+                                <button class="btn small primary" disabled="@(State.IsBusy || State.IsRegeneratingScript || State.SelectedObjectCount == 0)"
+                                        @onclick="RegenerateAsync">
+                                    @(State.IsRegeneratingScript ? "Regenerando…" : "Actualizar script")
+                                </button>
+                            }
+                            else
+                            {
+                                <span class="tree-toolbar-info">@State.SelectedRowCount / @State.TotalRowCount registros incluidos</span>
+                                <button class="btn small" disabled="@(State.IsBusy || State.TotalRowCount == 0)"
+                                        @onclick="State.SelectAllDataRows">Seleccionar todos</button>
+                                <button class="btn small" disabled="@(State.IsBusy || State.SelectedRowCount == 0)"
+                                        @onclick="State.SelectNoDataRows">Ninguno</button>
+                            }
+                        </div>
+
+                        <div class="panel-body">
+                            @if (State.IsSchemaMode && State.MatrixRows.Count == 0)
+                            {
+                                <div class="empty-state">
+                                    <span class="empty-icon">⏳</span>
+                                    <span class="empty-title">Sin coincidencias</span>
+                                    <span class="empty-text">Ningún objeto coincide con la búsqueda actual.</span>
+                                </div>
+                            }
+                            else if (State.IsDataMode && State.FilteredDataGroups.Count == 0)
+                            {
+                                <div class="empty-state">
+                                    <span class="empty-icon">⏳</span>
+                                    <span class="empty-title">Sin registros coincidentes</span>
+                                    <span class="empty-text">Ninguna tabla o fila coincide con la búsqueda actual.</span>
+                                </div>
+                            }
+                            else if (State.IsSchemaMode && State.UseTreeView)
+                            {
+                                <SchemaDiffTree Groups="State.FilteredSchemaGroups"
+                                                IsSelected="State.IsSelected"
+                                                IsFocused="IsFocused"
+                                                IsCollapsed="State.IsGroupCollapsed"
+                                                OnToggleGroup="State.ToggleGroup"
+                                                OnToggleObject="OnToggleObject"
+                                                OnGroupSelection="OnGroupSelection"
+                                                OnFocusObject="OnFocusObject" />
+                            }
+                            else if (State.IsSchemaMode)
+                            {
+                                <table class="matrix">
+                                    <thead>
+                                        <tr>
+                                            <th class="cell-check"></th>
+                                            <th>Estado</th>
+                                            <th>Objeto / tabla</th>
+                                            <th>Tipo</th>
+                                            <th>Origen</th>
+                                            <th>Destino</th>
+                                            <th>Acción</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var row in State.MatrixRows)
+                                        {
+                                            <tr class="@(row.IsSelectable && !State.IsSelected(row.Node!) ? "excluded" : null)">
+                                                <td class="cell-check">
+                                                    @if (row.IsSelectable)
+                                                    {
+                                                        <input class="col-check" type="checkbox"
+                                                               checked="@State.IsSelected(row.Node!)"
+                                                               aria-label="@($"Incluir {row.Name} en el script")"
+                                                               @onchange="e => State.SetObjectSelected(row.Node!, (bool)(e.Value ?? false))" />
+                                                    }
+                                                </td>
+                                                <td>
+                                                    <span class="badge @row.StatusClass">@row.StatusLabel</span>
+                                                </td>
+                                                <td>
+                                                    @if (row.IsSelectable)
+                                                    {
+                                                        <button type="button" class="cell-name"
+                                                                title="Ver el script de este objeto"
+                                                                @onclick="() => OnFocusObject(row.Node!)">
+                                                            @row.Name
+                                                        </button>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span class="cell-name">@row.Name</span>
+                                                    }
+                                                </td>
+                                                <td class="cell-type">@row.Type</td>
+                                                <td class="cell-state">@row.SourceState</td>
+                                                <td class="cell-state">@row.TargetState</td>
+                                                <td class="row-note">@row.ActionLabel</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            }
+                            else
+                            {
+                                <DataDiffTable Groups="State.FilteredDataGroups"
+                                               IsSelected="State.IsRowSelected"
+                                               SelectedCount="State.SelectedRowsInTable"
+                                               OnRowSelection="OnRowSelection"
+                                               OnTableSelection="OnTableSelection" />
+                            }
+                        </div>
+                    }
+                </section>
+            }
+            else
+            {
+                <ScriptPanel Script="@State.DisplayedScript"
+                             Title="@State.ScriptTitle"
+                             EmptyMessage="@ScriptEmptyMessage"
+                             CanApply="State.CanApplyScript"
+                             OnApply="ApplyScriptAsync">
+                    <Actions>
+                        @if (State.HasSchemaSelection)
+                        {
+                            <div class="segmented" role="group" aria-label="Vista del script">
+                                <button class="btn small @(State.IsObjectScriptView ? null : "active")"
+                                        @onclick="State.ShowFinalScript">Script final</button>
+                                <button class="btn small @(State.IsObjectScriptView ? "active" : null)"
+                                        disabled="@(State.FocusedObject is null)"
+                                        @onclick="ShowFocusedObjectScript">Script del objeto</button>
+                            </div>
+                        }
+                    </Actions>
+                </ScriptPanel>
+            }
+
+            <section class="panel">
+                <div class="panel-head">
+                    <span class="panel-title">Execution log &amp; output</span>
+                    <span class="spacer"></span>
+                    <span class="panel-meta">@HostLabel</span>
+                    <button class="btn small ghost" @onclick="State.ClearLog">Limpiar</button>
+                </div>
+
+                @if (State.Log.Count == 0)
+                {
+                    <div class="console-body">
+                        <div class="log-line">
+                            <span class="log-cat">[System]</span>
+                            <span class="log-msg">Listo. Esperando una comparación.</span>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="console-body">
+                        @foreach (var entry in State.Log)
+                        {
+                            <div class="log-line cat-@entry.Category.ToLowerInvariant()">
+                                <span class="log-cat">[@entry.Category]</span>
+                                <span class="log-msg">@entry.Message</span>
+                                <span class="log-time">[@entry.Time]</span>
+                            </div>
+                        }
+                    </div>
+                }
+            </section>
+        </main>
+    </div>
+
+    <footer class="app-status">
+        <span class="@(State.IsBusy ? "status-busy" : null)">@State.StatusMessage</span>
+        <span class="spacer"></span>
+        <span>@State.Summary</span>
+    </footer>
+</div>
+
+@if (State.IsConnectionDrawerVisible)
+{
+    <div class="drawer-backdrop" @onclick="State.HideConnectionDrawer">
+        <div class="drawer" @onclick:stopPropagation="true">
+            <div class="drawer-head">
+                <h2>Conexiones</h2>
+                <span class="drawer-sub">Origen y destino de la comparación</span>
+                <span class="spacer"></span>
+                <button class="btn small" @onclick="State.HideConnectionDrawer">Cerrar</button>
+            </div>
+            <div class="drawer-body">
+                <div class="conn-grid">
+                    <ConnectionPanel Connection="State.Source" OnChanged="RefreshAsync" />
+                    <ConnectionPanel Connection="State.Target" OnChanged="RefreshAsync" />
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (State.IsApplyConfirmationVisible)
+{
+    <div class="modal-backdrop">
+        <div class="modal">
+            <h2>Aplicar script</h2>
+            <p>@State.ApplyConfirmationText</p>
+            <div class="modal-actions">
+                <button class="btn" @onclick="State.DismissApplyConfirmation">No</button>
+                <button class="btn warn" @onclick="ConfirmApplyAsync">Sí, aplicar</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    protected override void OnInitialized() => State.Changed += OnStateChanged;
+
+    public void Dispose() => State.Changed -= OnStateChanged;
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    private string SourceName => DisplayName(State.Source, "sqlsuite-src");
+
+    private string TargetName => DisplayName(State.Target, "sqlsuite-tgt");
+
+    private static string DisplayName(ConnectionState connection, string fallback)
+        => string.IsNullOrWhiteSpace(connection.DatabaseName) ? fallback : connection.DatabaseName;
+
+    private static string HostLabel => OperatingSystem.IsMacOS()
+        ? "MACOS · .NET 8"
+        : OperatingSystem.IsWindows() ? "WINDOWS · .NET 8" : "LINUX · .NET 8";
+
+    private Task RefreshAsync()
+    {
+        State.Refresh();
+        return Task.CompletedTask;
+    }
+
+    private async Task RefreshHealthAsync() => await State.RefreshHealthAsync();
+
+    private void ChangeMode(ComparisonMode mode) => State.Mode = mode;
+
+    private void ApplyPreset(ComparisonPreset preset) => State.ApplyPreset(preset);
+
+    private void OnFocusObject(SchemaDifferenceInfo node)
+    {
+        State.ShowObjectScript(node);
+        State.ShowTab(WorkspaceTab.Script);
+    }
+
+    private void ShowFocusedObjectScript()
+    {
+        if (State.FocusedObject is not null)
+            State.ShowObjectScript(State.FocusedObject);
+    }
+
+    private void OnSearchInput(ChangeEventArgs args)
+        => State.SearchTerm = args.Value?.ToString() ?? string.Empty;
+
+    private void OnToggleObject((SchemaDifferenceInfo Node, bool Selected) change)
+        => State.SetObjectSelected(change.Node, change.Selected);
+
+    private void OnRowSelection((RowChange Change, bool Selected) change)
+        => State.SetRowSelected(change.Change, change.Selected);
+
+    private void OnTableSelection((TableDataDifference Table, bool Selected) change)
+        => State.SetTableRowsSelected(change.Table, change.Selected);
+
+    private void OnGroupSelection((SchemaDiffGroup Group, bool Selected) change)
+        => State.SetGroupSelected(change.Group, change.Selected);
+
+    private bool IsFocused(SchemaDifferenceInfo node)
+        => State.IsObjectScriptView && ReferenceEquals(node.Root, State.FocusedObject);
+
+    private string ScriptEmptyMessage => State.HasSchemaSelection
+        ? "No hay script para este objeto con la selección actual."
+        : "Ejecuta una comparación para generar el script.";
+
+    private async Task CompareAsync() => await State.CompareAsync();
+
+    private async Task RegenerateAsync() => await State.RegenerateScriptAsync();
+
+    private Task ApplyScriptAsync()
+    {
+        State.RequestApplyScript();
+        return Task.CompletedTask;
+    }
+
+    private async Task ConfirmApplyAsync() => await State.ConfirmApplyScriptAsync();
+
+    private void OnMaxRowsChanged(ChangeEventArgs args)
+    {
+        if (int.TryParse(args.Value?.ToString(), out var value))
+            State.MaxRowsPerTable = value;
+    }
+
+    private static string ModeLabel(ComparisonMode mode)
+        => mode == ComparisonMode.Schema ? "Esquema · DDL" : "Datos · DML";
+}

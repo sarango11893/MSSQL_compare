@@ -1,0 +1,72 @@
+@* Generated T-SQL with copy-to-clipboard and apply-to-target actions. *@
+<div class="script-panel">
+    <div class="script-head">
+        <h3>@Title</h3>
+        <div class="script-actions">
+            @if (Actions is not null)
+            {
+                @Actions
+            }
+            <button class="btn" disabled="@(!HasScript)" @onclick="CopyAsync">Copiar</button>
+            <button class="btn warn" disabled="@(!CanApply)" @onclick="ApplyAsync">Aplicar en destino</button>
+        </div>
+    </div>
+
+    @if (HasScript)
+    {
+        <pre class="script-body" @ref="preElement">@Script</pre>
+    }
+    else
+    {
+        <p class="empty">@EmptyMessage</p>
+    }
+</div>
+
+@code {
+    private ElementReference preElement;
+
+    [Inject]
+    private IJSRuntime JS { get; set; } = default!;
+
+    /// <summary>Script currently displayed: the whole deployment or a single object extract.</summary>
+    [Parameter, EditorRequired]
+    public string Script { get; set; } = string.Empty;
+
+    /// <summary>Panel heading; tells the user which view is active.</summary>
+    [Parameter]
+    public string Title { get; set; } = "Script generado";
+
+    [Parameter]
+    public string EmptyMessage { get; set; } = "Ejecuta una comparación para generar el script.";
+
+    [Parameter]
+    public bool CanApply { get; set; }
+
+    [Parameter]
+    public EventCallback OnApply { get; set; }
+
+    /// <summary>Extra controls (script view toggle) rendered before the copy button.</summary>
+    [Parameter]
+    public RenderFragment? Actions { get; set; }
+
+    private bool HasScript => !string.IsNullOrEmpty(Script);
+
+    private Task ApplyAsync() => OnApply.InvokeAsync();
+
+    private async Task CopyAsync()
+    {
+        if (!HasScript)
+            return;
+
+        try
+        {
+            await JS.InvokeVoidAsync("sqlSuite.clipboard.copy", Script);
+        }
+        catch (JSException)
+        {
+            // Fallback for non-secure origins (http://<lan-ip>): select the text so the
+            // user can copy it with Ctrl+C.
+            await JS.InvokeVoidAsync("sqlSuite.clipboard.select", preElement);
+        }
+    }
+}

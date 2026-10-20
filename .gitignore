@@ -1,0 +1,17 @@
+# .NET build output
+**/bin/
+**/obj/
+**/TestResults/
+
+# IDE and OS files
+.vs/
+.idea/
+.DS_Store
+*.user
+*.suo
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+appsettings.*.local.json

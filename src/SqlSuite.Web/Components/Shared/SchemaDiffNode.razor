@@ -1,0 +1,85 @@
+@* Renders one schema difference plus its children. Top level rows expose the selection checkbox. *@
+
+<li class="tree-node @(Excluded ? "excluded" : null)">
+    <div class="tree-row @(IsFocused(Node) ? "focused" : null)">
+        @if (Selectable)
+        {
+            <input class="col-check" type="checkbox" checked="@(!Excluded)"
+                   aria-label="@($"Incluir {Node.ObjectName} en el script")"
+                   @onchange="e => OnSelectionChanged(e, Node)" />
+        }
+        else
+        {
+            <span class="col-check"></span>
+        }
+
+        <span class="col-action badge @ActionClass(Node.UpdateAction)">@ActionLabel(Node.UpdateAction)</span>
+
+        @if (ShowType)
+        {
+            <span class="col-type">@Node.ObjectType</span>
+        }
+
+        <button type="button" class="col-name" title="@($"Ver el script de {Node.Root.ObjectName}")"
+                @onclick="() => OnFocus.InvokeAsync(Node)">
+            @Node.ObjectName
+        </button>
+    </div>
+
+    @if (Node.Children.Count > 0)
+    {
+        <ul class="tree">
+            @foreach (var child in Node.Children)
+            {
+                <SchemaDiffNode Node="child" Selectable="false" ShowType="true"
+                                IsSelected="IsSelected" IsFocused="IsFocused"
+                                OnToggle="OnToggle" OnFocus="OnFocus" />
+            }
+        </ul>
+    }
+</li>
+
+@code {
+    [Parameter, EditorRequired]
+    public SchemaDifferenceInfo Node { get; set; } = default!;
+
+    [Parameter]
+    public bool Selectable { get; set; }
+
+    [Parameter]
+    public bool ShowType { get; set; }
+
+    /// <summary>Selection predicate; children inherit the state of their top level object.</summary>
+    [Parameter, EditorRequired]
+    public Func<SchemaDifferenceInfo, bool> IsSelected { get; set; } = _ => true;
+
+    /// <summary>Highlight predicate; marks the object whose script is displayed.</summary>
+    [Parameter]
+    public Func<SchemaDifferenceInfo, bool> IsFocused { get; set; } = _ => false;
+
+    [Parameter]
+    public EventCallback<(SchemaDifferenceInfo Node, bool Selected)> OnToggle { get; set; }
+
+    /// <summary>Raised when the name is clicked to display that object's own script.</summary>
+    [Parameter]
+    public EventCallback<SchemaDifferenceInfo> OnFocus { get; set; }
+
+    private bool Excluded => !IsSelected(Node);
+
+    private Task OnSelectionChanged(ChangeEventArgs args, SchemaDifferenceInfo node)
+        => OnToggle.InvokeAsync((node, (bool)(args.Value ?? false)));
+
+    internal static string ActionClass(SchemaUpdateAction action) => action switch
+    {
+        SchemaUpdateAction.Create => "create",
+        SchemaUpdateAction.Alter => "alter",
+        _ => "drop",
+    };
+
+    internal static string ActionLabel(SchemaUpdateAction action) => action switch
+    {
+        SchemaUpdateAction.Create => "CREAR",
+        SchemaUpdateAction.Alter => "CAMBIAR",
+        _ => "ELIMINAR",
+    };
+}
