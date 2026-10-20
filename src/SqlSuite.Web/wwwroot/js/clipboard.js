@@ -24,5 +24,22 @@ window.sqlSuite.clipboard = {
         const selection = window.getSelection();
         selection.removeAllRanges();
         selection.addRange(range);
+    },
+    download: function (title, text) {
+        const baseName = (title || 'sqlsuite-script')
+            .normalize('NFKD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '') || 'sqlsuite-script';
+        const blob = new Blob([text], { type: 'text/sql;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${baseName}.sql`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 };

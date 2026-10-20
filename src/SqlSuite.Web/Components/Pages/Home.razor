@@ -183,6 +183,12 @@
                         @onclick="() => State.ShowTab(WorkspaceTab.Script)">
                     🗄 Generated T-SQL Sync Script
                 </button>
+                <button class="tab @(State.ActiveTab == WorkspaceTab.TextDiff ? "active" : null)"
+                        disabled="@(!State.CanCompareFocusedText)"
+                        title="Compara el texto DDL o los valores DML del elemento enfocado"
+                        @onclick="State.ShowTextDiff">
+                    ⇄ Comparar texto
+                </button>
             </div>
 
             @if (State.ActiveTab == WorkspaceTab.Visualizer)
@@ -337,7 +343,7 @@
                                                     @if (row.IsSelectable)
                                                     {
                                                         <button type="button" class="cell-name"
-                                                                title="Ver el script de este objeto"
+                                                                title="Comparar el texto anterior y nuevo de este objeto"
                                                                 @onclick="() => OnFocusObject(row.Node!)">
                                                             @row.Name
                                                         </button>
@@ -362,13 +368,14 @@
                                                IsSelected="State.IsRowSelected"
                                                SelectedCount="State.SelectedRowsInTable"
                                                OnRowSelection="OnRowSelection"
-                                               OnTableSelection="OnTableSelection" />
+                                                              OnTableSelection="OnTableSelection"
+                                                              OnFocusChange="State.ShowDataRowTextDiff" />
                             }
                         </div>
                     }
                 </section>
             }
-            else
+            else if (State.ActiveTab == WorkspaceTab.Script)
             {
                 <ScriptPanel Script="@State.DisplayedScript"
                              Title="@State.ScriptTitle"
@@ -389,7 +396,66 @@
                     </Actions>
                 </ScriptPanel>
             }
+            else
+            {
+                <section class="panel text-diff-panel">
+                    <div class="panel-head">
+                        <span class="panel-title">@State.TextDiffHeading</span>
+                        <span class="panel-meta">@State.FocusedTextDiffTitle</span>
+                        <span class="spacer"></span>
+                        <span class="diff-count removed">@State.RemovedTextLineCount eliminada(s)</span>
+                        <span class="diff-count added">@State.AddedTextLineCount añadida(s)</span>
+                    </div>
 
+                    @if (State.IsSchemaMode && !State.HasSchemaSelection
+                        || State.IsDataMode && State.TableDifferences.Count == 0)
+                    {
+                        <div class="empty-state">
+                            <span class="empty-title">Sin comparación @(State.IsSchemaMode ? "de esquema" : "de datos")</span>
+                            <span class="empty-text">Ejecuta una comparación para inspeccionar las diferencias.</span>
+                        </div>
+                    }
+                    else if (!State.CanCompareFocusedText)
+                    {
+                        <div class="empty-state">
+                            <span class="empty-title">Selecciona @(State.IsSchemaMode ? "un objeto" : "un registro") desde Comparison Visualizer</span>
+                            <span class="empty-text">Pulsa su nombre o clave para ver únicamente sus diferencias.</span>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="text-diff-legend">
+                            <span><i class="diff-swatch removed"></i> Anterior · Destino</span>
+                            <span><i class="diff-swatch added"></i> Nuevo · Origen</span>
+                        </div>
+                        <div class="text-diff-scroll">
+                            <table class="text-diff-table" aria-label="Diferencias entre definiciones anteriores y nuevas">
+                                <thead>
+                                    <tr>
+                                        <th colspan="2">Anterior · Destino</th>
+                                        <th colspan="2">Nuevo · Origen</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var line in State.TextDiffRows)
+                                    {
+                                        var kind = line.Kind.ToString().ToLowerInvariant();
+                                        <tr class="diff-line @kind">
+                                            <td class="diff-line-number">@line.OldLineNumber</td>
+                                            <td class="diff-code"><pre>@line.OldText</pre></td>
+                                            <td class="diff-line-number">@line.NewLineNumber</td>
+                                            <td class="diff-code"><pre>@line.NewText</pre></td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </section>
+            }
+
+            @if (State.ActiveTab != WorkspaceTab.TextDiff)
+            {
             <section class="panel">
                 <div class="panel-head">
                     <span class="panel-title">Execution log &amp; output</span>
@@ -421,6 +487,7 @@
                     </div>
                 }
             </section>
+            }
         </main>
     </div>
 
@@ -496,10 +563,7 @@
     private void ApplyPreset(ComparisonPreset preset) => State.ApplyPreset(preset);
 
     private void OnFocusObject(SchemaDifferenceInfo node)
-    {
-        State.ShowObjectScript(node);
-        State.ShowTab(WorkspaceTab.Script);
-    }
+        => State.ShowObjectTextDiff(node);
 
     private void ShowFocusedObjectScript()
     {

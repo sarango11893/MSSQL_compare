@@ -13,6 +13,7 @@ public sealed class ComparisonState
 {
     private readonly SchemaComparerService _schemaComparer = new();
     private readonly DataComparerService _dataComparer = new();
+    private readonly TextDiffService _textDiffService = new();
     private readonly ScriptExecutionService _executionService = new();
     private readonly ComparisonOptions _options = new();
 
@@ -31,6 +32,8 @@ public sealed class ComparisonState
     private string _searchTerm = string.Empty;
     private SchemaScriptView _scriptView = SchemaScriptView.Final;
     private SchemaDifferenceInfo? _focusedObject;
+    private RowChange? _focusedDataChange;
+    private IReadOnlyList<CodeDiffLine> _focusedTextDiff = Array.Empty<CodeDiffLine>();
     private WorkspaceTab _activeTab = WorkspaceTab.Visualizer;
     private string? _activePresetName;
     private bool _useTreeView;
@@ -91,7 +94,7 @@ public sealed class ComparisonState
 
     // -------------------------------------------------------------- workspace tabs
 
-    /// <summary>Tab selected in the main area: the difference matrix or the generated script.</summary>
+    /// <summary>Tab selected in the main area.</summary>
     public WorkspaceTab ActiveTab
     {
         get => _activeTab;
@@ -106,6 +109,12 @@ public sealed class ComparisonState
     }
 
     public void ShowTab(WorkspaceTab tab) => ActiveTab = tab;
+
+    public void ShowTextDiff()
+    {
+        if (CanCompareFocusedText)
+            ActiveTab = WorkspaceTab.TextDiff;
+    }
 
     /// <summary><see langword="true"/> while the connection settings drawer is open.</summary>
     public bool IsConnectionDrawerVisible
@@ -402,6 +411,77 @@ public sealed class ComparisonState
     /// <summary>Object whose script is shown while <see cref="SchemaScriptView.Object"/> is active.</summary>
     public SchemaDifferenceInfo? FocusedObject => _focusedObject;
 
+    public string FocusedTextDiffTitle => _focusedDataChange is not null
+        ? $"{_focusedDataChange.Table.QualifiedName} · {_focusedDataChange.KeyDisplay}"
+        : _focusedObject?.ObjectName ?? string.Empty;
+
+    public string TextDiffHeading => _focusedDataChange is null
+        ? "Comparación de definición DDL"
+        : "Comparación de registro DML";
+
+    public bool CanCompareFocusedText => _focusedDataChange is not null
+        || _focusedObject is not null
+            && (_focusedObject.SourceScript.Length > 0 || _focusedObject.TargetScript.Length > 0);
+
+    public IReadOnlyList<CodeDiffLine> TextDiffRows => _focusedTextDiff;
+
+    public int AddedTextLineCount => _focusedTextDiff.Count(line => line.Kind == CodeDiffKind.Added);
+
+    public int RemovedTextLineCount => _focusedTextDiff.Count(line => line.Kind == CodeDiffKind.Removed);
+
+    public void ShowObjectTextDiff(SchemaDifferenceInfo node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+
+        SchemaDifferenceInfo root = node.Root;
+        if (root.SourceScript.Length == 0 && root.TargetScript.Length == 0)
+        {
+            ShowObjectScript(root);
+            ActiveTab = WorkspaceTab.Script;
+            return;
+        }
+
+        _focusedObject = root;
+        _focusedDataChange = null;
+        _focusedTextDiff = _textDiffService.Compare(root.TargetScript, root.SourceScript);
+        _scriptView = SchemaScriptView.Object;
+        ActiveTab = WorkspaceTab.TextDiff;
+        Notify();
+    }
+
+    public void ShowDataRowTextDiff(RowChange change)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+
+        _focusedObject = null;
+        _focusedDataChange = change;
+        _focusedTextDiff = _textDiffService.Compare(
+            FormatDataRowForDiff(change, source: false),
+            FormatDataRowForDiff(change, source: true));
+        ActiveTab = WorkspaceTab.TextDiff;
+        Notify();
+    }
+
+    private static string FormatDataRowForDiff(RowChange change, bool source)
+    {
+        if (source && change.Kind == RowChangeKind.Delete
+            || !source && change.Kind == RowChangeKind.Insert)
+            return string.Empty;
+
+        if (change.Kind == RowChangeKind.Update)
+        {
+            return string.Join('\n', change.ChangedColumns.Select(column =>
+                $"{column.ColumnName} = {FormatValue(source ? column.SourceValue : column.TargetValue)}"));
+        }
+
+        IReadOnlyDictionary<string, object?> values = source ? change.SourceValues : change.TargetValues;
+        IEnumerable<KeyValuePair<string, object?>> orderedValues = change.Table.Columns
+            .Where(column => values.ContainsKey(column.Name))
+            .Select(column => new KeyValuePair<string, object?>(column.Name, values[column.Name]));
+
+        return string.Join('\n', orderedValues.Select(pair => $"{pair.Key} = {FormatValue(pair.Value)}"));
+    }
+
     /// <summary>Script rendered in the panel: either the focused object's blocks or the whole deployment.</summary>
     public string DisplayedScript => IsObjectScriptView
         ? ScriptObjectExtractor.Extract(Script, new[] { _focusedObject!.ObjectName })
@@ -433,6 +513,8 @@ public sealed class ComparisonState
 
         var root = node.Root;
         _focusedObject = root;
+        _focusedDataChange = null;
+        _focusedTextDiff = _textDiffService.Compare(root.TargetScript, root.SourceScript);
         _scriptView = SchemaScriptView.Object;
         Notify();
     }
@@ -997,6 +1079,9 @@ public sealed class ComparisonState
         _session = session;
         _sessionDropObjectsNotInSource = _options.DropObjectsNotInSource;
         SchemaDifferences.AddRange(result.Differences);
+        foreach (var group in SchemaGroups)
+            _collapsedGroups.Add(group.ObjectType);
+
         _excludedObjects.Clear();
         foreach (var node in SchemaDifferences)
             _excludedObjects.Add(node.Root);
@@ -1071,6 +1156,8 @@ public sealed class ComparisonState
         _collapsedGroups.Clear();
         _searchTerm = string.Empty;
         _focusedObject = null;
+        _focusedDataChange = null;
+        _focusedTextDiff = Array.Empty<CodeDiffLine>();
         _scriptView = SchemaScriptView.Final;
         SchemaDifferences.Clear();
         TableDifferences.Clear();

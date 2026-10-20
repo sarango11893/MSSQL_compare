@@ -247,8 +247,11 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
     gap: 14px;
     padding: 16px;
     min-width: 0;
+    min-height: 0;
     overflow-y: auto;
 }
+
+.content:has(.text-diff-panel) { overflow: hidden; }
 
 /* ------------------------------------------------------- mode segmented */
 
@@ -927,6 +930,97 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
 
 .script-empty { padding: 40px 16px; }
 
+/* -------------------------------------------------------- object text diff */
+
+.text-diff-panel {
+    flex: 1;
+    min-height: 0;
+}
+
+.text-diff-legend {
+    display: flex;
+    gap: 16px;
+    padding: 10px 14px;
+    color: var(--text-dim);
+    font-size: 11px;
+    border-bottom: 1px solid var(--border);
+}
+
+.text-diff-legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+.diff-swatch {
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+}
+
+.diff-swatch.removed { background: #f87171; }
+.diff-swatch.added { background: #4ade80; }
+
+.diff-count { font-size: 10px; }
+.diff-count.removed { color: #fca5a5; }
+.diff-count.added { color: #86efac; }
+
+.text-diff-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    background: #101014;
+}
+
+.text-diff-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.6;
+}
+
+.text-diff-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface-2);
+}
+
+.text-diff-table th {
+    padding: 8px 10px;
+    color: var(--text-dim);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+}
+
+.text-diff-table td { border-bottom: 1px solid rgba(255, 255, 255, .025); }
+
+.text-diff-table .diff-line-number {
+    width: 42px;
+    padding: 0 7px;
+    color: var(--text-mute);
+    text-align: right;
+    user-select: none;
+}
+
+.text-diff-table .diff-code { width: calc(50% - 42px); }
+
+.text-diff-table .diff-code pre {
+    min-height: 1.6em;
+    margin: 0;
+    padding: 0 10px;
+    overflow: visible;
+    color: #d4d4dc;
+    white-space: pre;
+    tab-size: 4;
+}
+
+.text-diff-table tr.removed { background: rgba(248, 113, 113, .12); }
+.text-diff-table tr.removed .diff-line-number { color: #fca5a5; }
+.text-diff-table tr.added { background: rgba(74, 222, 128, .12); }
+.text-diff-table tr.added .diff-line-number { color: #86efac; }
+.text-diff-table tr.unchanged .diff-line-number { opacity: .6; }
+
 /* ---------------------------------------------------------- connections */
 
 .conn-grid {
@@ -1224,6 +1318,17 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
     font-size: 11px;
     white-space: nowrap;
 }
+
+.row-key-link {
+    padding: 0;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    font: inherit;
+    cursor: pointer;
+}
+
+.row-key-link:hover { color: #93b8fb; text-decoration: underline; }
 
 .row-values {
     max-width: 520px;

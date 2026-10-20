@@ -36,6 +36,12 @@ public sealed class SchemaDifferenceInfo
 
     public SchemaDifferenceInfo? Parent { get; init; }
 
+    /// <summary>DDL definition from the source model (the desired/new version).</summary>
+    public string SourceScript { get; init; } = string.Empty;
+
+    /// <summary>DDL definition from the target model (the current/old version).</summary>
+    public string TargetScript { get; init; } = string.Empty;
+
     /// <summary>Top level object this node belongs to; a top level object returns itself.</summary>
     public SchemaDifferenceInfo Root => Parent is null ? this : Parent.Root;
 

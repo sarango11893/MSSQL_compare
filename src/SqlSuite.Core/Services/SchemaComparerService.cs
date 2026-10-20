@@ -146,6 +146,8 @@ public sealed class SchemaComparerService
             Raw = difference,
             Depth = depth,
             Parent = parent,
+            SourceScript = depth == 0 ? GetScript(difference.SourceObject) : string.Empty,
+            TargetScript = depth == 0 ? GetScript(difference.TargetObject) : string.Empty,
         };
 
         if (difference.Children is not null)
@@ -160,6 +162,11 @@ public sealed class SchemaComparerService
 
         return node;
     }
+
+    private static string GetScript(TSqlObject? databaseObject)
+        => databaseObject is not null && databaseObject.TryGetScript(out string script)
+            ? script
+            : string.Empty;
 
     private static CoreSchemaUpdateAction ToCore(DacSchemaUpdateAction action) => action switch
     {

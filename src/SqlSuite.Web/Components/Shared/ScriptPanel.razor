@@ -8,6 +8,7 @@
                 @Actions
             }
             <button class="btn" disabled="@(!HasScript)" @onclick="CopyAsync">Copiar</button>
+            <button class="btn" disabled="@(!HasScript)" @onclick="DownloadAsync">Descargar .sql</button>
             <button class="btn warn" disabled="@(!CanApply)" @onclick="ApplyAsync">Aplicar en destino</button>
         </div>
     </div>
@@ -52,6 +53,14 @@
     private bool HasScript => !string.IsNullOrEmpty(Script);
 
     private Task ApplyAsync() => OnApply.InvokeAsync();
+
+    private Task DownloadAsync()
+    {
+        if (!HasScript)
+            return Task.CompletedTask;
+
+        return JS.InvokeVoidAsync("sqlSuite.clipboard.download", Title, Script).AsTask();
+    }
 
     private async Task CopyAsync()
     {

@@ -54,6 +54,16 @@ El resultado se proyecta a un árbol de `SchemaDifferenceInfo` (`Create` / `Alte
 donde las diferencias de tipo «propiedad» de DacFx se cuentan pero no se muestran como nodos,
 para que el árbol refleje objetos y no ruido interno.
 
+Después de una comparación de esquema, pulsa el nombre de un objeto en **Comparison Visualizer**
+para abrir directamente su diff de texto, cuando DacFx expone su definición. La vista compara
+el texto actual del destino con el texto deseado del origen y resalta líneas eliminadas y
+añadidas; no usa el script global de despliegue como sustituto de las definiciones individuales.
+En la vista de árbol, los grupos de objetos empiezan colapsados. El panel del script permite copiar
+su contenido o descargarlo como archivo `.sql`.
+Los grupos DML por tabla también comienzan colapsados. Pulsa la clave de un registro para abrir
+la comparación textual de sus valores anteriores (destino) y nuevos (origen), resaltando los
+valores eliminados y añadidos.
+
 > **La selección no usa `SchemaComparisonResult.Exclude`.** Ese API resulta poco fiable en DacFx
 > 162.x: devuelve `false` y deja `Included == true` cuando el nodo tiene dependencias de
 > exclusión, `GetExcludeDependencies` lanza `NotSupportedException`/`ArgumentException` al

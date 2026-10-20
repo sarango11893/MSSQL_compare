@@ -7,6 +7,7 @@ public enum WorkspaceTab
 {
     Visualizer,
     Script,
+    TextDiff,
 }
 
 /// <summary>

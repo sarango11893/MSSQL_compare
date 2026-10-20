@@ -28,7 +28,7 @@ else
             }
             else
             {
-                <details class="data-table-group" open>
+                <details class="data-table-group">
                     <summary class="data-table-heading">
                         <input class="col-check table-check"
                                type="checkbox"
@@ -76,7 +76,13 @@ else
                                                     @ComparisonState.RowChangeKindLabel(change)
                                                 </span>
                                             </td>
-                                            <td class="row-key">@change.KeyDisplay</td>
+                                            <td class="row-key">
+                                                <button type="button" class="row-key-link"
+                                                        title="Comparar los valores anteriores y nuevos de este registro"
+                                                        @onclick="() => OnFocusChange.InvokeAsync(change)">
+                                                    @change.KeyDisplay
+                                                </button>
+                                            </td>
                                             <td class="row-values">@ComparisonState.RowChangeDetails(change)</td>
                                         </tr>
                                     }
@@ -105,4 +111,7 @@ else
 
     [Parameter]
     public EventCallback<(TableDataDifference Table, bool Selected)> OnTableSelection { get; set; }
+
+    [Parameter]
+    public EventCallback<RowChange> OnFocusChange { get; set; }
 }
