@@ -68,6 +68,12 @@ public sealed class ComparisonOptions
     /// </summary>
     public IList<string> IncludedTables { get; } = new List<string>();
 
+    /// <summary>
+    /// Optional per-table row identity overrides. Each mapping must match a non-null unique
+    /// key available in both databases; invalid mappings cause that table to be skipped.
+    /// </summary>
+    public IList<TableKeyMapping> ComparisonKeys { get; } = new List<TableKeyMapping>();
+
     /// <summary>Include comparable columns only (skip computed, rowversion, generated always).</summary>
     public bool SkipNonWritableColumns { get; set; } = true;
 
@@ -119,6 +125,15 @@ public sealed class ComparisonOptions
 
         foreach (var table in IncludedTables)
             clone.IncludedTables.Add(table);
+
+        foreach (var mapping in ComparisonKeys)
+        {
+            clone.ComparisonKeys.Add(new TableKeyMapping
+            {
+                Table = mapping.Table,
+                Columns = mapping.Columns.ToList(),
+            });
+        }
 
         return clone;
     }

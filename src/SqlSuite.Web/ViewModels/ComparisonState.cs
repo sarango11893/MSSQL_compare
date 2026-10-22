@@ -1295,6 +1295,26 @@ public sealed class ComparisonState
             _options.IncludedTables.Add(table);
         }
 
+        _options.ComparisonKeys.Clear();
+        foreach (var mappingSection in _configuration.GetSection("DataComparison:ComparisonKeys").GetChildren())
+        {
+            var table = mappingSection["Table"];
+            var columns = mappingSection.GetSection("Columns")
+                .GetChildren()
+                .Select(section => section.Value)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!.Trim())
+                .ToList();
+            if (!string.IsNullOrWhiteSpace(table))
+            {
+                _options.ComparisonKeys.Add(new TableKeyMapping
+                {
+                    Table = table.Trim(),
+                    Columns = columns,
+                });
+            }
+        }
+
         var includedTables = _options.IncludedTables.ToList();
         if (includedTables.Count > 0)
         {

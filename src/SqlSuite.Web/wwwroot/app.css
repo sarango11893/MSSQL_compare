@@ -1414,11 +1414,30 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
     list-style: none;
 }
 
-.data-table-heading::-webkit-details-marker { display: none; }
-.data-table-group[open] > .data-table-heading { border-bottom: 1px solid var(--border-soft); }
+.data-table-group.expanded > .data-table-heading { border-bottom: 1px solid var(--border-soft); }
 
-.data-table-group:not(.skipped) > .data-table-heading { cursor: pointer; }
-.data-table-group:not(.skipped) > .data-table-heading:hover { background: var(--surface-2); }
+.data-table-toggle {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+    padding: 0;
+    color: inherit;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+}
+
+.data-table-toggle:hover .data-table-name { color: #93b8fb; }
+
+.data-table-chevron {
+    width: 12px;
+    flex: 0 0 12px;
+    color: var(--text-mute);
+    font-size: 12px;
+}
 
 .data-table-name {
     color: var(--text);
@@ -1436,7 +1455,6 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
 }
 
 .data-table-count {
-    margin-left: auto;
     color: var(--text-dim);
     font-size: 10.5px;
     white-space: nowrap;

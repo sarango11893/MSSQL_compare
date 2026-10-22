@@ -5,7 +5,7 @@ estructura (DDL) y datos (DML), como alternativa a Redgate *SQL Compare* / *SQL 
 Se ejecuta en macOS, Linux y Windows; la interfaz se abre en el navegador.
 
 - **.NET 8** · **Blazor Server** para la interfaz (se ejecuta en macOS, Linux y Windows)
-- **Microsoft.SqlServer.DacFx** para la comparación de esquemas y la lectura de metadatos
+- **Microsoft.SqlServer.DacFx** para la comparación y los scripts de esquema
 - **Microsoft.Data.SqlClient** para la comparación de datos en streaming
 
 El documento de requisitos y la estructura de referencia están en [docs/PRD.txt](docs/PRD.txt)
@@ -94,9 +94,11 @@ pero **no sustituye la autenticación de usuarios**: no expongas la aplicación 
 
 ### Módulo B — Data Compare (DML)
 
-`DacModelReader` extrae de DacFx las tablas con una clave utilizable (PK → índice único →
-restricción única) y sus columnas escribibles. `DataComparerService` abre un `SqlDataReader`
-por lado y hace un *merge join* ordenado por clave: nunca carga una tabla completa en memoria.
+`SqlTableMetadataReader` consulta directamente los catálogos `sys.tables`, `sys.columns` y
+`sys.indexes` para obtener las columnas y claves de las tablas DML, aplicando la lista configurada
+en el propio SQL. Evita cargar con DacFx los modelos completos de ambas bases y registrar vistas
+que no se comparan. `DataComparerService` abre un `SqlDataReader` por lado y hace un *merge join*
+ordenado por clave: nunca carga una tabla completa en memoria.
 Cada fila se clasifica como `Insert`, `Update` o `Delete`, y `DataScriptGenerator` produce un
 script envuelto en transacción (borrados → actualizaciones → inserciones) usando
 `SqlLiteralFormatter` para los literales T-SQL.
@@ -214,8 +216,11 @@ si se alcanza, el resultado se marca incompleto y no genera un script parcial.
 Cuando ambos catálogos están en el mismo servidor, se usa una comparación `SELECT` entre bases
 ejecutada en SQL Server para los tipos de datos compatibles. Esto evita transferir a la aplicación
 las filas que coinciden. Requiere que la cuenta tenga permiso de lectura en ambas bases desde la
-misma conexión. Tipos no compatibles o comparación de texto sin distinción de mayúsculas usan el
-comparador exacto existente como alternativa; no se omiten diferencias por muestreo.
+misma conexión. Los tipos de texto se filtran con colación binaria sin convertir cada valor a
+`nvarchar(max)`/`varbinary(max)`; las filas candidatas se verifican en la aplicación con las opciones
+exactas de mayúsculas y finales de línea. Las claves de texto se comparan fuera de SQL cuando la
+normalización de finales de línea está activa para conservar su correspondencia exacta. Los tipos
+no compatibles usan el comparador exacto existente; no se omiten diferencias por muestreo.
 
 La lista editable de tablas DML está en `src/SqlSuite.Web/appsettings.json`, bajo
 `DataComparison:IncludedTables`. Se compara solo esa lista; se aceptan nombres de tabla sin esquema
@@ -223,18 +228,30 @@ La lista editable de tablas DML está en `src/SqlSuite.Web/appsettings.json`, ba
 el `appsettings.json` situado junto a la aplicación. Los nombres repetidos no son necesarios. Si
 la lista queda vacía, se comparan todas las tablas.
 
+Si Redgate usa una clave de comparación distinta de la PK de una tabla, se puede declarar en
+`DataComparison:ComparisonKeys` con el nombre completo y las columnas en el mismo orden. SqlSuite
+solo acepta la asignación cuando las columnas coinciden con una PK, restricción única o índice único
+no filtrado y no nullable presente en cada base; si no, omite la tabla e informa el motivo, sin
+volver silenciosamente a otra clave. La asignación de `dbo.SYS_EsquemaXML_archivo` usa
+`idesquema + nombre`, según el predicado del script Redgate compartido. Para reproducir las claves
+personalizadas del resto de tablas se deben añadir las asignaciones correspondientes del proyecto
+de comparación Redgate; no se pueden inferir de forma segura solo por los cambios observados.
+
 * Los cambios se agrupan por tabla. El checkbox de la cabecera de cada tabla incluye o excluye
   todos sus registros; los checkboxes de fila permiten elegir registros concretos, incluso
   cambios de tipo `INSERT`, `UPDATE` o `DELETE`.
 * Al expandir una tabla, la cuadrícula muestra los nombres reales de todas las columnas y una fila
   por cada registro diferente. La fila y los encabezados de columnas con cambios se resaltan en rojo;
   las celdas diferentes usan un resaltado más marcado. Al pulsarlas se abre una vista
-  previa acotada con los valores de destino y origen. La cuadrícula tiene desplazamiento propio
-  para no alargar toda la página.
+  previa acotada con los valores de destino y origen. Las filas de una tabla se renderizan al expandir
+  el grupo; se muestran todas sus diferencias, sin paginación.
 * La opción **Tratar CRLF y LF como iguales** está activa por defecto y evita diferencias causadas
   únicamente por el formato del salto de línea. Al desactivarla, los finales de línea se comparan
   estrictamente. El resto del contenido, incluidos espacios y mayúsculas según la opción elegida,
-  sigue comparándose.
+  sigue comparándose. En la ruta optimizada, SQL Server filtra diferencias con la comparación
+  binaria original y la aplicación descarta los candidatos que solo cambian de CRLF a LF; así se
+  evita ejecutar `REPLACE` sobre cada valor de texto escaneado. Las tablas cuya clave sea de texto
+  usan el comparador de filas para mantener correcta la coincidencia de claves normalizadas.
 * Ningún registro está seleccionado por defecto. **Seleccionar todos** afecta a todos los cambios
   comparables; la búsqueda puede localizar por nombre de tabla, clave, columna o valor y no altera
   la selección.

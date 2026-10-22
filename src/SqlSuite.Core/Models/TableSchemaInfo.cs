@@ -21,6 +21,9 @@ public sealed class TableSchemaInfo
     /// <summary>Where the key came from: <c>Primary key</c>, <c>Unique constraint</c> or <c>Unique index</c>.</summary>
     public string KeySource { get; init; } = string.Empty;
 
+    /// <summary>Reason a configured comparison key could not be validated against this table.</summary>
+    public string? KeySelectionError { get; init; }
+
     public bool HasKey => KeyColumns.Count > 0;
 
     public bool HasIdentity => Columns.Any(c => c.IsIdentity);

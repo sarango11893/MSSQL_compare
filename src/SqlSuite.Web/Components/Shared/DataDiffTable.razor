@@ -28,40 +28,50 @@ else
             }
             else
             {
-                var displayColumns = DisplayColumns(table);
-                <details class="data-table-group">
-                    <summary class="data-table-heading">
+                var isTableExpanded = IsTableExpanded(table);
+                <section class="data-table-group @(isTableExpanded ? "expanded" : null)">
+                    <div class="data-table-heading">
                         <input class="col-check table-check"
                                type="checkbox"
                                checked="@(table.TotalCount > 0 && selectedCount == table.TotalCount)"
                                aria-label="@($"Seleccionar todos los registros de {table.Table.QualifiedName}")"
-                               @onclick:stopPropagation="true"
                                @onchange="e => OnTableSelection.InvokeAsync((table, (bool)(e.Value ?? false)))" />
-                        <span class="data-table-name">@table.Table.QualifiedName</span>
-                        <span class="data-table-meta">@table.Table.KeySource · @string.Join(", ", table.Table.KeyColumns)</span>
+                        <button type="button"
+                                class="data-table-toggle"
+                                aria-expanded="@isTableExpanded"
+                                @onclick="() => ToggleTable(table)">
+                            <span class="data-table-chevron" aria-hidden="true">@(isTableExpanded ? "▾" : "▸")</span>
+                            <span class="data-table-name">@table.Table.QualifiedName</span>
+                            <span class="data-table-meta">@table.Table.KeySource · @string.Join(", ", table.Table.KeyColumns)</span>
+                        </button>
                         <span class="data-table-count">@selectedCount / @table.TotalCount seleccionados</span>
-                    </summary>
+                    </div>
 
-                    @if (group.Changes.Count == 0)
+                    @if (isTableExpanded)
                     {
-                        <p class="data-table-empty">
-                            @(table.TotalCount == 0
-                                ? "No hay diferencias en esta tabla."
-                                : "Ningún registro coincide con la búsqueda actual.")
-                        </p>
-                    }
-                    else
-                    {
-                        <div class="data-table-scroll">
-                            <table class="grid data-grid">
-                                <thead>
-                                    <tr>
-                                        <th class="cell-check"></th>
-                                        <th>Acción</th>
-                                        <th>Clave del registro</th>
-                                        @foreach (var column in displayColumns)
-                                        {
-                                                var columnHasChanges = group.Changes.Any(change => IsChanged(change, column.Name));
+                        var displayColumns = DisplayColumns(table);
+                        var columnsWithChanges = ChangedColumnNames(group.Changes);
+
+                        @if (group.Changes.Count == 0)
+                        {
+                            <p class="data-table-empty">
+                                @(table.TotalCount == 0
+                                    ? "No hay diferencias en esta tabla."
+                                    : "Ningún registro coincide con la búsqueda actual.")
+                            </p>
+                        }
+                        else
+                        {
+                            <div class="data-table-scroll">
+                                <table class="grid data-grid">
+                                    <thead>
+                                        <tr>
+                                            <th class="cell-check"></th>
+                                            <th>Acción</th>
+                                            <th>Clave del registro</th>
+                                            @foreach (var column in displayColumns)
+                                            {
+                                                var columnHasChanges = columnsWithChanges.Contains(column.Name);
                                                 <th class="data-column-heading @(columnHasChanges ? "column-has-changes" : null)"
                                                     title="@(columnHasChanges ? $"{column.Name}: contiene diferencias" : column.Name)">
                                                     @column.Name
@@ -70,95 +80,95 @@ else
                                         </tr>
                                     </thead>
                                     <tbody>
-                                    @foreach (var change in group.Changes)
-                                    {
-                                        var isExpanded = ReferenceEquals(_expandedChange, change);
-                                        <tr class="data-change-row row-has-difference @(!IsSelected(change) ? "row-unselected" : null) @(isExpanded ? "row-expanded" : null)">
-                                            <td class="cell-check">
-                                                <input class="col-check" type="checkbox"
-                                                       checked="@IsSelected(change)"
-                                                       aria-label="@($"Incluir registro {change.KeyDisplay} de {table.Table.QualifiedName}")"
-                                                       @onclick:stopPropagation="true"
-                                                       @onchange="e => OnRowSelection.InvokeAsync((change, (bool)(e.Value ?? false)))" />
-                                            </td>
-                                            <td>
-                                                <span class="badge @ComparisonState.RowChangeKindClass(change)">
-                                                    @ComparisonState.RowChangeKindLabel(change)
-                                                </span>
-                                            </td>
-                                            <td class="row-key">
-                                                <button type="button" class="row-key-link"
-                                                        title="Comparar los valores anteriores y nuevos de este registro"
-                                                        @onclick="() => OnFocusChange.InvokeAsync(change)">
-                                                    @change.KeyDisplay
-                                                </button>
-                                            </td>
-                                            @foreach (var column in displayColumns)
-                                            {
-                                                var isChanged = IsChanged(change, column.Name);
-                                                <td class="data-value-cell @(isChanged ? "value-changed" : null)">
-                                                    @if (isChanged)
-                                                    {
-                                                        <button type="button"
-                                                                class="data-value-preview"
-                                                                aria-expanded="@isExpanded"
-                                                                title="Selecciona para previsualizar este registro"
-                                                                @onclick="() => TogglePreview(change)">
-                                                            @CellValue(change, column.Name)
-                                                        </button>
-                                                    }
-                                                    else
-                                                    {
-                                                        <span class="data-value-static">@CellValue(change, column.Name)</span>
-                                                    }
-                                                </td>
-                                            }
-                                        </tr>
-
-                                        @if (isExpanded)
+                                        @foreach (var change in group.Changes)
                                         {
-                                            var previewColumns = PreviewColumns(change, displayColumns);
-                                            <tr class="data-preview-row">
-                                                <td colspan="@(3 + displayColumns.Count)">
-                                                    <div class="data-preview-panel">
-                                                        <div class="data-preview-heading">
-                                                            <strong>Vista previa de diferencias</strong>
-                                                            <span>@change.Table.QualifiedName · @change.KeyDisplay</span>
-                                                            <button type="button" class="btn small ghost"
-                                                                    @onclick="() => TogglePreview(change)">Cerrar</button>
-                                                        </div>
-                                                        <div class="data-preview-columns">
-                                                            @foreach (var column in previewColumns)
-                                                            {
-                                                                <section class="data-preview-column">
-                                                                    <h4>@column.Name</h4>
-                                                                    @if (change.Kind != RowChangeKind.Insert)
-                                                                    {
-                                                                        <div class="data-preview-value before">
-                                                                            <span>Destino · anterior</span>
-                                                                            <code>@FullValue(change.PreviewTargetValues, column.Name)</code>
-                                                                        </div>
-                                                                    }
-                                                                    @if (change.Kind != RowChangeKind.Delete)
-                                                                    {
-                                                                        <div class="data-preview-value after">
-                                                                            <span>Origen · nuevo</span>
-                                                                            <code>@FullValue(change.PreviewSourceValues, column.Name)</code>
-                                                                        </div>
-                                                                    }
-                                                                </section>
-                                                            }
-                                                        </div>
-                                                    </div>
+                                            var isExpanded = ReferenceEquals(_expandedChange, change);
+                                            <tr class="data-change-row row-has-difference @(!IsSelected(change) ? "row-unselected" : null) @(isExpanded ? "row-expanded" : null)">
+                                                <td class="cell-check">
+                                                    <input class="col-check" type="checkbox"
+                                                           checked="@IsSelected(change)"
+                                                           aria-label="@($"Incluir registro {change.KeyDisplay} de {table.Table.QualifiedName}")"
+                                                           @onchange="e => OnRowSelection.InvokeAsync((change, (bool)(e.Value ?? false)))" />
                                                 </td>
+                                                <td>
+                                                    <span class="badge @ComparisonState.RowChangeKindClass(change)">
+                                                        @ComparisonState.RowChangeKindLabel(change)
+                                                    </span>
+                                                </td>
+                                                <td class="row-key">
+                                                    <button type="button" class="row-key-link"
+                                                            title="Comparar los valores anteriores y nuevos de este registro"
+                                                            @onclick="() => OnFocusChange.InvokeAsync(change)">
+                                                        @change.KeyDisplay
+                                                    </button>
+                                                </td>
+                                                @foreach (var column in displayColumns)
+                                                {
+                                                    var isChanged = IsChanged(change, column.Name);
+                                                    <td class="data-value-cell @(isChanged ? "value-changed" : null)">
+                                                        @if (isChanged)
+                                                        {
+                                                            <button type="button"
+                                                                    class="data-value-preview"
+                                                                    aria-expanded="@isExpanded"
+                                                                    title="Selecciona para previsualizar este registro"
+                                                                    @onclick="() => TogglePreview(change)">
+                                                                @CellValue(change, column.Name)
+                                                            </button>
+                                                        }
+                                                        else
+                                                        {
+                                                            <span class="data-value-static">@CellValue(change, column.Name)</span>
+                                                        }
+                                                    </td>
+                                                }
                                             </tr>
+
+                                            @if (isExpanded)
+                                            {
+                                                var previewColumns = PreviewColumns(change, displayColumns);
+                                                <tr class="data-preview-row">
+                                                    <td colspan="@(3 + displayColumns.Count)">
+                                                        <div class="data-preview-panel">
+                                                            <div class="data-preview-heading">
+                                                                <strong>Vista previa de diferencias</strong>
+                                                                <span>@change.Table.QualifiedName · @change.KeyDisplay</span>
+                                                                <button type="button" class="btn small ghost"
+                                                                        @onclick="() => TogglePreview(change)">Cerrar</button>
+                                                            </div>
+                                                            <div class="data-preview-columns">
+                                                                @foreach (var column in previewColumns)
+                                                                {
+                                                                    <section class="data-preview-column">
+                                                                        <h4>@column.Name</h4>
+                                                                        @if (change.Kind != RowChangeKind.Insert)
+                                                                        {
+                                                                            <div class="data-preview-value before">
+                                                                                <span>Destino · anterior</span>
+                                                                                <code>@FullValue(change.PreviewTargetValues, column.Name)</code>
+                                                                            </div>
+                                                                        }
+                                                                        @if (change.Kind != RowChangeKind.Delete)
+                                                                        {
+                                                                            <div class="data-preview-value after">
+                                                                                <span>Origen · nuevo</span>
+                                                                                <code>@FullValue(change.PreviewSourceValues, column.Name)</code>
+                                                                            </div>
+                                                                        }
+                                                                    </section>
+                                                                }
+                                                            </div>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            }
                                         }
-                                    }
-                                </tbody>
-                            </table>
-                        </div>
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
                     }
-                </details>
+                </section>
             }
         }
     </div>
@@ -166,6 +176,7 @@ else
 
 @code {
     private RowChange? _expandedChange;
+    private readonly HashSet<string> _expandedTables = new(StringComparer.OrdinalIgnoreCase);
 
     [Parameter, EditorRequired]
     public IReadOnlyList<FilteredDataTableGroup> Groups { get; set; } = Array.Empty<FilteredDataTableGroup>();
@@ -187,6 +198,49 @@ else
 
     private static IReadOnlyList<ColumnSchemaInfo> DisplayColumns(TableDataDifference table)
         => table.Table.Columns;
+
+    private static HashSet<string> ChangedColumnNames(IReadOnlyList<RowChange> changes)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var change in changes)
+        {
+            if (change.Kind == RowChangeKind.Update)
+            {
+                foreach (var column in change.ChangedColumns)
+                    names.Add(column.ColumnName);
+            }
+            else
+            {
+                names.UnionWith(change.Kind == RowChangeKind.Delete
+                    ? change.PreviewTargetValues.Keys
+                    : change.PreviewSourceValues.Keys);
+            }
+        }
+
+        return names;
+    }
+
+    private bool IsTableExpanded(TableDataDifference table)
+        => _expandedTables.Contains(TableKey(table));
+
+    private void ToggleTable(TableDataDifference table)
+    {
+        var key = TableKey(table);
+        if (!_expandedTables.Add(key))
+        {
+            _expandedTables.Remove(key);
+            if (_expandedChange is not null
+                && _expandedChange.Table.FullName.Equals(key, StringComparison.OrdinalIgnoreCase))
+            {
+                _expandedChange = null;
+            }
+        }
+
+        StateHasChanged();
+    }
+
+    private static string TableKey(TableDataDifference table)
+        => table.Table.FullName;
 
     private static IReadOnlyList<ColumnSchemaInfo> PreviewColumns(
         RowChange change,

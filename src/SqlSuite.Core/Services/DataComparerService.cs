@@ -46,19 +46,40 @@ public sealed class DataComparerService
         effective.MaxRowsPerTable = Math.Max(1, effective.MaxRowsPerTable);
         var startedAt = DateTime.UtcNow;
         var errors = new List<string>();
+        var configuredTables = effective.IncludedTables
+            .Select(name => name.Trim())
+            .Where(name => name.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
-        TSqlModel sourceModel;
-        TSqlModel targetModel;
+        using var sourceConnection = new SqlConnection(source.GetConnectionString());
+        using var targetConnection = new SqlConnection(target.GetConnectionString());
+        IReadOnlyList<TableSchemaInfo> sourceMetadata;
+        IReadOnlyList<TableSchemaInfo> targetMetadata;
 
         try
         {
-            progress?.Report(new DataComparisonProgress("Extrayendo esquema de origen"));
-            sourceModel = await Task.Run(() => LoadModel(source, "origen"), cancellationToken).ConfigureAwait(false);
+            progress?.Report(new DataComparisonProgress("Conectando a origen"));
+            await sourceConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
 
-            progress?.Report(new DataComparisonProgress("Extrayendo esquema de destino"));
-            targetModel = await Task.Run(() => LoadModel(target, "destino"), cancellationToken).ConfigureAwait(false);
+            progress?.Report(new DataComparisonProgress("Leyendo metadatos DML de origen"));
+            sourceMetadata = await SqlTableMetadataReader.ReadTablesAsync(
+                sourceConnection,
+                configuredTables,
+                effective.ComparisonKeys,
+                cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
+
+            progress?.Report(new DataComparisonProgress("Conectando a destino"));
+            await targetConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            progress?.Report(new DataComparisonProgress("Leyendo metadatos DML de destino"));
+            targetMetadata = await SqlTableMetadataReader.ReadTablesAsync(
+                targetConnection,
+                configuredTables,
+                effective.ComparisonKeys,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -69,20 +90,15 @@ public sealed class DataComparerService
             return new DataComparisonResultInfo
             {
                 IsValid = false,
-                Errors = new[] { $"No se pudo leer el esquema: {FormatExceptionDetails(ex)}" },
+                Errors = new[] { $"No se pudo leer metadatos DML de origen o destino: {FormatExceptionDetails(ex)}" },
                 Duration = DateTime.UtcNow - startedAt,
             };
         }
 
-        var allSourceTables = DacModelReader.ReadTables(sourceModel)
+        var allSourceTables = sourceMetadata
             .ToDictionary(t => t.FullName, StringComparer.OrdinalIgnoreCase);
-        var targetTables = DacModelReader.ReadTables(targetModel)
+        var targetTables = targetMetadata
             .ToDictionary(t => t.FullName, StringComparer.OrdinalIgnoreCase);
-        var configuredTables = effective.IncludedTables
-            .Select(name => name.Trim())
-            .Where(name => name.Length > 0)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
         var sourceTables = allSourceTables
             .Where(pair => IsIncluded(pair.Value, configuredTables))
             .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
@@ -107,32 +123,8 @@ public sealed class DataComparerService
             };
         }
 
-        using var sourceConnection = new SqlConnection(source.GetConnectionString());
-        using var targetConnection = new SqlConnection(target.GetConnectionString());
         var canCompareAcrossDatabases = SameServer(source.ServerName, target.ServerName)
             && SameSecurityContext(source, target);
-
-        try
-        {
-            progress?.Report(new DataComparisonProgress(canCompareAcrossDatabases
-                ? "Conectando para comparación en SQL Server"
-                : "Conectando a las bases de datos"));
-            await sourceConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            await targetConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            return new DataComparisonResultInfo
-            {
-                IsValid = false,
-                Errors = new[] { $"No se pudo conectar con origen o destino: {ex.Message}" },
-                Duration = DateTime.UtcNow - startedAt,
-            };
-        }
 
         var orderedTables = sourceTables.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).ToList();
         for (var tableIndex = 0; tableIndex < orderedTables.Count; tableIndex++)
@@ -155,6 +147,13 @@ public sealed class DataComparerService
             if (!targetTables.TryGetValue(fullName, out var targetTable))
             {
                 skipped.Add($"{fullName} (no existe en destino)");
+                continue;
+            }
+
+            if (sourceTable.KeySelectionError is not null || targetTable.KeySelectionError is not null)
+            {
+                var reason = sourceTable.KeySelectionError ?? targetTable.KeySelectionError;
+                skipped.Add($"{fullName} (clave de comparación no validada: {reason})");
                 continue;
             }
 
@@ -758,7 +757,9 @@ public sealed class DataComparerService
         IReadOnlyDictionary<string, object?> keySourceValues,
         IReadOnlyList<ColumnValueChange>? changedColumns = null)
     {
-        var keyValues = table.KeyColumns.Select(key => keySourceValues[key]).ToList();
+        var keyValues = table.KeyColumns
+            .Select(key => (target ?? source!)[key])
+            .ToList();
         return new RowChange
         {
             Table = table,
@@ -788,7 +789,8 @@ public sealed class DataComparerService
             var targetColumn = target.FindColumn(name);
             if (sourceColumn is null || targetColumn is null
                 || !SameSqlType(sourceColumn, targetColumn)
-                || !IsSqlComparableType(sourceColumn, options))
+                || options.NormalizeLineEndings && IsStringType(sourceColumn)
+                || !IsSqlComparableType(sourceColumn))
                 return false;
         }
 
@@ -797,7 +799,7 @@ public sealed class DataComparerService
             var targetColumn = target.FindColumn(column.Name);
             if (targetColumn is null
                 || !SameSqlType(column, targetColumn)
-                || !IsSqlComparableType(column, options))
+                || !IsSqlComparableType(column))
                 return false;
         }
 
@@ -811,11 +813,11 @@ public sealed class DataComparerService
            && left.Scale == right.Scale
            && left.IsMax == right.IsMax;
 
-    private static bool IsSqlComparableType(ColumnSchemaInfo column, ComparisonOptions options)
+    internal static bool IsSqlComparableType(ColumnSchemaInfo column)
     {
         var type = column.DataTypeName.ToLowerInvariant();
         if (type is "varchar" or "nvarchar" or "char" or "nchar" or "sysname")
-            return options.CaseSensitiveDataComparison;
+            return true;
 
         return type is "bit" or "tinyint" or "smallint" or "int" or "bigint"
             or "decimal" or "numeric" or "money" or "smallmoney"
@@ -825,13 +827,12 @@ public sealed class DataComparerService
             or "binary" or "varbinary" or "timestamp" or "rowversion";
     }
 
-    private static string BuildSqlEquality(string left, string right, ColumnSchemaInfo column)
+    internal static string BuildSqlEquality(string left, string right, ColumnSchemaInfo column)
     {
         if (IsStringType(column))
         {
-            var leftBinary = AsUnicodeBinary(left);
-            var rightBinary = AsUnicodeBinary(right);
-            return $"{leftBinary} = {rightBinary} AND DATALENGTH({leftBinary}) = DATALENGTH({rightBinary})";
+            return $"{left} COLLATE Latin1_General_100_BIN2 = {right} COLLATE Latin1_General_100_BIN2 "
+                + $"AND DATALENGTH({left}) = DATALENGTH({right})";
         }
 
         if (IsBinaryType(column))
@@ -840,23 +841,17 @@ public sealed class DataComparerService
         return $"{left} = {right}";
     }
 
-    private static string BuildSqlDifference(string left, string right, ColumnSchemaInfo column)
+    internal static string BuildSqlDifference(string left, string right, ColumnSchemaInfo column)
     {
-        if (IsStringType(column))
-        {
-            left = AsUnicodeBinary(left);
-            right = AsUnicodeBinary(right);
-        }
-
-        var unequal = IsBinaryType(column) || IsStringType(column)
-            ? $"({left} <> {right} OR DATALENGTH({left}) <> DATALENGTH({right}))"
-            : $"{left} <> {right}";
+        var unequal = IsStringType(column)
+            ? $"({left} COLLATE Latin1_General_100_BIN2 <> {right} COLLATE Latin1_General_100_BIN2 "
+                + $"OR DATALENGTH({left}) <> DATALENGTH({right}))"
+            : IsBinaryType(column)
+                ? $"({left} <> {right} OR DATALENGTH({left}) <> DATALENGTH({right}))"
+                : $"{left} <> {right}";
 
         return $"({unequal} OR ({left} IS NULL AND {right} IS NOT NULL) OR ({left} IS NOT NULL AND {right} IS NULL))";
     }
-
-    private static string AsUnicodeBinary(string expression)
-        => $"CONVERT(varbinary(max), CONVERT(nvarchar(max), {expression}))";
 
     private static bool IsStringType(ColumnSchemaInfo column)
         => column.DataTypeName.Equals("varchar", StringComparison.OrdinalIgnoreCase)
@@ -925,7 +920,7 @@ public sealed class DataComparerService
         {
             var left = source[key];
             var right = target[key];
-            var result = CompareValues(left, right, options);
+            var result = CompareValues(left, right, options, options.NormalizeLineEndings);
             if (result != 0)
                 return result;
         }
@@ -1032,7 +1027,7 @@ public sealed class DataComparerService
         ComparisonOptions options,
         IReadOnlyList<ColumnValueChange>? changed = null)
     {
-        var primary = source ?? target!;
+        var primary = target ?? source!;
         var keyValues = table.KeyColumns.Select(key => primary[key]).ToList();
 
         return new RowChange

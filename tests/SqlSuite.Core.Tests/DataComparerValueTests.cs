@@ -74,6 +74,36 @@ public sealed class DataComparerValueTests
     }
 
     [Fact]
+    public void ServerSideStringComparison_UsesBinaryCollationWithoutMaxConversions()
+    {
+        var column = new ColumnSchemaInfo { Name = "Body", DataTypeName = "nvarchar" };
+
+        var equality = DataComparerService.BuildSqlEquality(
+            "s.[Body]",
+            "t.[Body]",
+            column);
+        var difference = DataComparerService.BuildSqlDifference(
+            "s.[Body]",
+            "t.[Body]",
+            column);
+
+        Assert.Contains("s.[Body] COLLATE Latin1_General_100_BIN2", equality);
+        Assert.Contains("t.[Body] COLLATE Latin1_General_100_BIN2", equality);
+        Assert.Contains("s.[Body] COLLATE Latin1_General_100_BIN2", difference);
+        Assert.Contains("t.[Body] COLLATE Latin1_General_100_BIN2", difference);
+        Assert.DoesNotContain("nvarchar(max)", difference);
+        Assert.DoesNotContain("varbinary(max)", difference);
+    }
+
+    [Fact]
+    public void ServerSideStringComparison_AllowsStringCandidatesForClientSideFiltering()
+    {
+        var column = new ColumnSchemaInfo { Name = "Body", DataTypeName = "nvarchar" };
+
+        Assert.True(DataComparerService.IsSqlComparableType(column));
+    }
+
+    [Fact]
     public void Binary_ComparesLexicographically()
     {
         Assert.Equal(0, DataComparerService.CompareValues(new byte[] { 1, 2 }, new byte[] { 1, 2 }, CaseSensitive));

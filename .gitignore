@@ -15,3 +15,4 @@
 .env.*
 !.env.example
 appsettings.*.local.json
+src/SqlSuite.Web/appsettings.json
