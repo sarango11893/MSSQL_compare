@@ -1,7 +1,8 @@
 # SQL Suite
 
 Aplicación local para comparar y sincronizar bases de datos **Microsoft SQL Server**:
-estructura (DDL) y datos (DML), como alternativa a Redgate *SQL Compare* / *SQL Data Compare*.
+estructura (DDL) y datos (DML). Diseñada como una alternativa independiente y multiplataforma 
+a las soluciones de pago tradicionales (schema and data compare).
 Se ejecuta en macOS, Linux y Windows; la interfaz se abre en el navegador.
 
 - **.NET 8** · **Blazor Server** para la interfaz (se ejecuta en macOS, Linux y Windows)
